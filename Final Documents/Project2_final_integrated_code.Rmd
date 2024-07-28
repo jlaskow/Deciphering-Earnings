@@ -1,0 +1,3864 @@
+---
+title: "Project 2 Predicting Salary"
+author: "Adam E."
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_packages, echo=FALSE}
+library(tidyverse)
+library(dplyr)
+library(plyr)
+library(tidyr)
+library(lmtest) # Durban-Watson test for independence
+library(car)
+library(corrplot)
+library(jtools)
+library(sjPlot)
+library(ResourceSelection)
+library(ROCR)
+library(pROC)
+library(ggplot2)
+library(naniar)  #for visualizing missing data
+library(ResourceSelection) # Hoslem test for goodness of fit
+```
+# Key question for this study: Is it possible to predict when someone is likely to make over 50k? 
+* Secondary question: What variables best predict a subject making over 50k?
+
+
+# Data Descriptions:
+* Sources: https://archive.ics.uci.edu/dataset/2/adult
+
+## Variable Name	Role	Type	Demographic	Description	Units	Missing Values
+* age	Feature	Integer	Age	N/A		no
+
+* workclass	Feature	Categorical	Income	Private, Self-emp-not-inc, Self-emp-inc, Federal-gov, Local-gov, State-gov, Without-pay, Never-worked.		yes
+
+* fnlwgt	Feature	Integer				no
+
+* education	Feature	Categorical	Education Level	Bachelors, Some-college, 11th, HS-grad, Prof-school, Assoc-acdm, Assoc-voc, 9th, 7th-8th, 12th, Masters, 1st-4th, 10th, Doctorate, 5th-6th, Preschool.		no
+* education-num	Feature	Integer	Education Level			no
+
+* marital-status	Feature	Categorical	Other	Married-civ-spouse, Divorced, Never-married, Separated, Widowed, Married-spouse-absent, Married-AF-spouse.		no
+
+* occupation	Feature	Categorical	Other	Tech-support, Craft-repair, Other-service, Sales, Exec-managerial, Prof-specialty, Handlers-cleaners, Machine-op-inspct, Adm-clerical, Farming-fishing, Transport-moving, Priv-house-serv, Protective-serv, Armed-Forces.		yes
+
+* relationship	Feature	Categorical	Other	Wife, Own-child, Husband, Not-in-family, Other-relative, Unmarried.		no
+
+* race	Feature	Categorical	Race	White, Asian-Pac-Islander, Amer-Indian-Eskimo, Other, Black.		no
+
+* sex	Feature	Binary	Sex	Female, Male.		no
+
+* capital-gain	Feature	Integer				no
+
+* capital-loss	Feature	Integer				no
+
+* hours-per-week	Feature	Integer				no
+
+* native-country	Feature	Categorical	Other	 [1] ""                            " ?"                          " Cambodia"                   " Canada"                    
+ [5] " China"                      " Columbia"                   " Cuba"                       " Dominican-Republic"        
+ [9] " Ecuador"                    " El-Salvador"                " England"                    " France"                    
+[13] " Germany"                    " Greece"                     " Guatemala"                  " Haiti"                     
+[17] " Holand-Netherlands"         " Honduras"                   " Hong"                       " Hungary"                   
+[21] " India"                      " Iran"                       " Ireland"                    " Italy"                     
+[25] " Jamaica"                    " Japan"                      " Laos"                       " Mexico"                    
+[29] " Nicaragua"                  " Outlying-US(Guam-USVI-etc)" " Peru"                       " Philippines"               
+[33] " Poland"                     " Portugal"                   " Puerto-Rico"                " Scotland"                  
+[37] " South"                      " Taiwan"                     " Thailand"                   " Trinadad&Tobago"           
+[41] " United-States"              " Vietnam"                    " Yugoslavia"                		yes
+income	Target	Binary	Income	>50K, <=50K.		no
+
+Note: 
+* fnlwgt (third column) - change to 'similar_pop_count' represents the number of subjects in the target population that the responding subject represents.
+* education_num - change to 'years_eduction' - count of total years in school
+* sex - changed to 'gender'
+```{r pressure, echo=FALSE}
+setwd("D:/University/SMU/Applied Statistics/Project2")
+adult<-read.csv("50_or_More.csv",header=T,stringsAsFactors = T)
+
+colnames(adult) <- c('age', 'workclass', 'similar_pop_count', 'education_level', 
+                     'years_education', 'marital_status', 'occupation', 'household_role', 'race', 'gender', 
+                     'capital_gain', 'capital_loss', 'hours_per_week', 'native_region', 'income')
+
+adult
+summary(adult)
+```
+
+
+# Tidying Data and resolving missing values:
+*  First get a card of missing values per column and then count them. 
+**   Findings: Of 32562 data values 15 are missing (less than 0.1 percent missing).
+```{r Visualize_missing_values}
+
+#Checking data types
+str(adult)
+cat("\n------------------Count NA----------------------\n\n")
+sort(colSums(is.na(adult)), decreasing = TRUE)
+vis_miss(adult)
+dim(adult)
+```
+
+# Most of the variables are categorical. To Better analyze them, we will:
+  1. Reclassified values into value groups to reduce levels ahead of any EDA and predictions.
+  2. replaced the remaining 15 missing values with averages.
+```{r reduce_levels}
+# Function to recode the values with trimmed spaces
+recode_value <- function(old_level) {
+  old_level <- trimws(old_level) # Trim leading and trailing whitespace
+  for (category in names(new_levels)) {
+    if (old_level %in% new_levels[[category]]) {
+      return(category)
+    }
+  }
+  return(NA) # Return NA if the education level does not match any category
+}
+
+levels(adult$workclass)<- c("unemployed", "unemployed","FedGov","LocGov","NeverWorked","Private",
+                                   "SelfEmpInc","SelfEmpNotInc","StateGov","unemployed")
+
+
+# The new education level categories
+new_levels <- list(
+  no_edu = c("", "Preschool"),
+  primary = c("1st-4th", "5th-6th"),
+  secondary = c("7th-8th"),
+  highsch = c("9th", "10th", "11th", "12th", "HS-grad"),
+  assoc = c("Assoc-acdm", "Assoc-voc", "Some-college"),
+  undergrad = c("Bachelors", "Prof-school"),
+  master = c("Masters"),
+  phd = c("Doctorate")
+)
+
+# Recode the education levels with the updated function
+adult$education_level <- sapply(adult$education_level, recode_value)
+
+# recreate the levels
+levels(adult$education_level)<- c("no_edu", "primary", "secondary", "highsch", "assoc", "undergrad", "master", "phd")
+
+# The new marital status categories
+new_levels <- list(
+  divorce = c("Divorced", "Separated"),
+  married = c("Married-AF-spouse", "Married-civ-spouse", "Married-spouse-absent"),
+  notmarried = c("", "Never-married"),
+  widowed = c("Widowed")
+)
+
+# Recode the marital statuses with the updated function
+adult$marital_status <- sapply(adult$marital_status, recode_value)
+
+# recreate the levels
+levels(adult$marital_status)<- c("divorce", "married", "notmarried", "widowed")
+
+
+new_levels <- list(
+  other = c("", "?"),
+  clerical = c("Adm-clerical"),
+  midskill = c("Craft-repair", "Machine-op-inspct", "Transport-moving"),
+  lowskill = c("Handlers-cleaners", "Other-service", "Priv-house-serv", "Armed-Forces"),
+  highskill = c("Sales", "Tech-support", "Protective-serv", "Prof-specialty", "Exec-managerial"),
+  agriculture = c("Farming-fishing")
+)
+
+
+# Recode the marital statuses with the updated function
+adult$occupation <- sapply(adult$occupation, recode_value)
+
+# recreate the levels
+levels(adult$occupation)<- c("other", "clerical", "midskill", "lowskill", "highskill", "agriculture")
+
+
+# Define the new levels for household_role
+new_levels <- list(
+  husband = c("Husband"),
+  wife = c("Wife"),
+  tenant = c("Not-in-family"),
+  single_occ = c("Unmarried", ""),
+  relative = c("Other-relative"),
+  depchild = c("Own-child")
+)
+
+# Recode the household_role column using the recode function
+adult$household_role <- sapply(adult$household_role, recode_value)
+
+# Convert the recoded household_role to a factor
+adult$household_role <- factor(adult$household_role, levels = names(new_levels))
+
+# Define the new levels for native_country
+new_levels <- list(
+  EAsia = c("Vietnam", "Laos", "Cambodia", "Thailand", "China", "Hong", "Taiwan", "Philippines", "Japan"),
+  SAsia = c("India", "Iran"),
+  NorthAmerica = c("Canada", "Mexico", "United-States"),
+  CentrAmerica = c("Cuba", "Dominican-Republic", "Guatemala", "Haiti", "Honduras", "Jamaica", "Trinadad&Tobago", "Nicaragua", "El-Salvador", "", "?"),
+  SouthAmerica = c("Ecuador", "Peru", "Columbia", "South"),
+  Europe = c("France", "Germany", "Greece", "Holand-Netherlands", "Italy", "Hungary", "Ireland", "Poland", "Portugal", "Scotland", "England", "Yugoslavia"),
+   USTerritory = c("Outlying-US(Guam-USVI-etc)", "Puerto-Rico")
+)
+
+# Recode the native_country column using the recode function
+adult$native_region <- sapply(adult$native_region, recode_value)
+
+# Convert the recoded native_country to a factor
+adult$native_region <- factor(adult$native_region)
+
+
+# Define the new levels for income
+new_levels <- list(
+  "<=50K" = c("<=50K", ""),
+  ">50K" = c(">50K")
+)
+
+# Recode the income column using the recode function
+adult$income <- sapply(adult$income, recode_value)
+
+# Convert the recoded income to a factor
+adult$income <- factor(adult$income, levels = names(new_levels))
+levels(adult$income)
+
+# Define the new levels for gender
+new_levels <- list(
+  "female" = c("Female", ""),
+  "male" = c("Male")
+)
+
+# Recode the gender column using the recode function
+adult$gender <- sapply(adult$gender, recode_value)
+
+# Convert the recoded gender to a factor
+adult$gender <- factor(adult$gender, levels = names(new_levels))
+levels(adult$gender)
+
+# Define the new levels for race
+new_levels <- list(
+  other = c("Other", ""),
+  white = c("White"),
+  black = c("Black"),
+  native = c("Amer-Indian-Eskimo"),
+  Asian_Pac_Islander = c("Asian-Pac-Islander")
+)
+
+# Recode the race column using the recode function
+adult$race <- sapply(adult$race, recode_value)
+
+# Convert the recoded race to a factor
+adult$race <- factor(adult$race, levels = names(new_levels))
+levels(adult$race)
+
+# get the average of all remaining missing values
+replace_missing_with_average <- function(data) {
+  for (col_name in names(data)) {
+    # Check if the column is numeric
+    if (is.numeric(data[[col_name]])) {
+      # Calculate the average, excluding NA values
+      column_mean <- mean(data[[col_name]], na.rm = TRUE)
+      # Replace NA values with the column's average
+      data[[col_name]][is.na(data[[col_name]])] <- column_mean
+    }
+  }
+  return(data)
+}
+
+# Call the replace function:
+adult <- replace_missing_with_average(adult)
+
+# Make sure categorical variables are factored
+adult[] <- lapply(adult, function(x) if(is.character(x)) as.factor(x) else x)
+
+
+# Create the spans in a new column 
+adult <- adult %>%
+  mutate(hours_worked_span = case_when(
+    `hours_per_week` >= 1 & `hours_per_week` <= 15 ~ "1-15",
+    `hours_per_week` >= 16 & `hours_per_week` <= 30 ~ "16-30",
+    `hours_per_week` >= 31 & `hours_per_week` <= 45 ~ "31-45",
+    `hours_per_week` >= 46 & `hours_per_week` <= 60 ~ "46-60",
+    `hours_per_week` >= 61 & `hours_per_week` <= 75 ~ "61-75",
+    `hours_per_week` >= 76 & `hours_per_week` <= 100 ~ "76-100",
+    TRUE ~ NA_character_  # Handle any other cases
+  ))
+
+# Convert the recoded hours_worked_span to a factor
+adult$hours_worked_span <- factor(adult$hours_worked_span, levels = c("1-15", "16-30", "31-45", "46-60", "61-75", "76-100"))
+
+# Check the levels 
+levels(adult$hours_worked_span)
+
+
+# Create new spans and a column
+adult <- adult %>%
+  mutate(age_span = cut(age, breaks = c(0, 20, 35, 50, 65, 75, 100),
+                        labels = c("1-20", "21-35", "36-50", "51-65", "66-75", "76-100"),
+                        right = FALSE))
+
+# Convert the 'age_span' column to a categorical type with ordered levels
+adult$age_span <- factor(adult$age_span,
+                         levels = c("1-20", "21-35", "36-50", "51-65", "66-75", "76-100"),
+                         ordered = TRUE)
+
+# Check the levels of the new factor
+levels(adult$age_span)
+
+# Review changes
+adult
+
+adult_dum <- adult
+# one-hot-encode income
+adult_dum$income <- ifelse(adult_dum$income == "<=50K", 0, 1)
+
+# Loop through columns
+for (col in names(adult_dum)) {
+  if (is.factor(adult_dum[[col]])) { # Check if column is a factor
+    levels <- levels(adult_dum[[col]]) # Get levels of the factor
+    adult_dum[[col]] <- as.numeric(factor(adult_dum[[col]], levels = levels)) # Convert factor to numeric based on levels
+    names(adult_dum)[names(adult_dum) == col] <- paste0(col, "_num") # Rename the column
+  }
+}
+
+adult_dum
+
+```
+
+
+# Verify all missing values are adjusted.
+```{r recheck_missing_values}
+adult <- adult %>%
+  mutate(invested = ifelse(capital_gain > 0 | capital_loss > 0, 1, 0))
+
+adult$invested <- factor(adult$invested,
+  levels = c("0", "1"),
+  labels = c("Not_Invested", "Invested")
+)
+levels(adult$invested)
+
+# Get all unique values in'invested'
+unique_values <- unique(adult$invested)
+unique_values
+
+
+#Checking data types
+str(adult)
+cat("\n------------------Count NA----------------------\n\n")
+sort(colSums(is.na(adult)), decreasing = TRUE)
+vis_miss(adult)
+dim(adult)
+```
+
+
+# EDA of the variables
+Sources: https://oakleyj.github.io/MAS61004/eda-for-logistic-regression.html
+```{r eda_continuous}
+# histogram of age by gender group
+ggplot(adult) + aes(x=age, group=income, fill=income) + 
+  geom_histogram(binwidth=1, color='black') +
+  labs(title = "Income by Age", x = "Age")
+
+ggplot(adult) + aes(x=years_education, group=income, fill=income) + 
+  geom_histogram(binwidth=1, color='black') +
+  labs(title = "Income by Years of Education", x = "Years")
+
+ggplot(adult) + aes(x=hours_per_week, group=income, fill=income) + 
+  geom_histogram(binwidth=1, color='black') +
+  labs(title = "Income by Hours Per Week", x = "Hours")
+```
+
+```{r eda_capital_Gain_loss}
+# Income by gain
+qplot(capital_gain, data = adult, fill = income)+
+  ggtitle('Earnings with Capital Gains')
+
+# Income by loss
+qplot(capital_loss, data = adult, fill = income)+
+  ggtitle('Earnings with Capital Loss')
+
+
+
+ggplot(adult, aes(x = invested, y = capital_gain, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Investment Gain")
+
+ggplot(adult, aes(x = invested, y = capital_loss, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Investment Loss")
+
+# Income by hours with percentage
+ggplot(adult, aes(x = hours_per_week, fill = income)) +
+  geom_bar(position = "fill") +
+  # facet_grid(. ~ race) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  ggtitle("Earnings by Hours") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+```
+
+
+
+```{r logging}
+# Log-transform the 'capital_gain' column
+adult_dum$capital_gain_log <- log(adult_dum$capital_gain + 1)  # Adding 1 to avoid log(0)
+
+# Log-transform the 'capital_gain' column
+adult_dum$capital_loss_log <- log(adult_dum$capital_loss + 1)  # Adding 1 to avoid log(0)
+```
+
+
+
+```{r loess_continuous}
+library(tidyverse)
+library(broom)
+# Check the continuous variables for linearity
+ggplot(adult_dum,(aes(x=age,y=income)))+geom_point()+geom_smooth(method="loess",span=.1) +
+  labs(title = "Income by Age", x = "Age", y = "Income")
+ggplot(adult_dum,(aes(x=years_education,y=income)))+geom_point()+geom_smooth(method="loess",span=.6)+
+  labs(title = "Income by Years of Education", x = "Years", y = "Income")
+ggplot(adult_dum,(aes(x=hours_per_week,y=income)))+geom_point()+geom_smooth(method="loess",span=.6)+
+  labs(title = "Income by Hours Per Week", x = "Hours", y = "Income")
+
+# Non logged capital Gains
+ggplot(adult, aes(x=capital_gain, y=adult_dum$income)) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=1) +
+  ylim(-.2, 2.5) +
+  labs(title = "Income by Capital Gain", x = "Capital Gain", y = "Income")
+
+# Non-logged capital loss
+ggplot(adult, aes(x=capital_loss, y=adult_dum$income)) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=1) +
+  ylim(-.2, 2.5) +
+  labs(title = "Income by Capital Loss", x = "Capital Loss", y = "Income")
+
+
+# Logged gain and loss
+ggplot(adult_dum,(aes(x=capital_gain_log, y=income)))+geom_point()+geom_smooth(method="loess",span=1)+
+  labs(title = "Income by Log Capital Gain", x = "Capital Gain", y = "Income")
+ggplot(adult_dum,(aes(x=capital_loss_log, y=income)))+geom_point()+geom_smooth(method="loess",span=1)+
+  labs(title = "Income by Log Capital Loss", x = "Capital Loss", y = "Income")
+```
+
+
+
+
+
+
+```{r eda_gender}
+ggplot(adult, aes(x = gender, y = age, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Age and Gender")
+
+ggplot(adult, aes(x = gender, y = years_education, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Gender and Education")
+
+ggplot(adult, aes(x = gender, y = hours_per_week, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Hours Worked and Gender")
+
+ggplot(adult, aes(x = income, y = hours_per_week, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Hours Worked")
+
+# Income by gender and hourswith percentage
+ggplot(adult, aes(x = age, fill = income)) +
+  geom_bar(width = 1, position = "fill") +
+  facet_grid(. ~ gender) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  ggtitle("Earnings by Age Type and Gender") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+# Income by gender and hourswith percentage
+ggplot(adult, aes(x = hours_per_week, fill = income)) +
+  geom_bar(width = 1, position = "fill") +
+  facet_grid(. ~ gender) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  ggtitle("Earnings by Hours Worked Type and Gender") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+# Income by gender and education with percentage
+ggplot(adult, aes(x = years_education, fill = income)) +
+  geom_bar(width = 0.8, position = "fill") +
+  facet_grid(. ~ gender) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  ggtitle("Earnings by Years Education and Gender") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+
+```
+
+
+```{r loess_gender}
+# Check the continuous variables for linearity against the logodds of Y
+levels(adult$gender)
+# Adjusted code for Age (AG) by weight (WT), with y = Status.Num
+ggplot(adult_dum, aes(x=age, y=income, colour=as.factor(gender_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Age with Gender", x = "Age", y = "Income") +
+      scale_colour_manual(name = "Gender",
+                        values = c("1" = "orange",  
+                                   "2" = "green"),
+                      labels = c("Female", "Male")) 
+
+ggplot(adult_dum, aes(x=hours_per_week, y=income, colour=as.factor(gender_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by hours Worked with Gender", x = "Hours", y = "Income") +
+      scale_colour_manual(name = "Gender",
+                        values = c("1" = "orange",  
+                                   "2" = "green"),
+                      labels = c("Female", "Male")) 
+
+ggplot(adult_dum, aes(x=years_education, y=income, colour=as.factor(gender_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Years of Education with Gender", x = "Years", y = "Income")+
+      scale_colour_manual(name = "Gender",
+                        values = c("1" = "orange",  
+                                   "2" = "green"),
+                      labels = c("Female", "Male")) 
+
+
+```
+
+
+
+
+```{r eda_race}
+ggplot(adult, aes(x = race, y = age, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Age and Race")
+
+ggplot(adult, aes(x = race, y = years_education, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Education and Race")
+
+ggplot(adult, aes(x = race, y = hours_per_week, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Hours Worked and Race")
+
+# Income by occupation
+qplot(occupation, data = adult, fill = income) + facet_grid (. ~ race)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+# Income by race with percentage
+ggplot(adult, aes(x = occupation, fill = income)) +
+  geom_bar(position = "fill") +
+  facet_grid(. ~ race) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  ggtitle("Earnings by Occupation and Race") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+# Income by race
+qplot(education_level, data = adult, fill = income) +
+  facet_grid(. ~ race) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+# Income by race with percentage
+ggplot(adult, aes(x = education_level, fill = income)) +
+  geom_bar(position = "fill") +
+  facet_grid(. ~ race) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  ggtitle("Earnings by Education Type and Race") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+# Income by race with percentage
+ggplot(adult, aes(x = marital_status, fill = income)) +
+  geom_bar(position = "fill") +
+  facet_grid(. ~ race) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  ggtitle("Earnings by Marital Status and Race (Percentage") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+# Hourse worked
+ggplot(adult, aes(x = occupation, y = hours_per_week, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  facet_grid(. ~ race)+
+  ggtitle("Earnings by Race, Occupation, and Hours Worked")
+
+
+```
+
+
+```{r loess_race}
+# Check the continuous variables for linearity against the logodds of Y
+
+# Adjusted code for Age (AG) by weight (WT), with y = Status.Num
+ggplot(adult_dum, aes(x=age, y=income, colour=as.factor(race_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Age with Race", x = "Age", y = "Income") +
+      scale_colour_manual(name = "Race",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red"),
+                      labels = c("Other", "White", "Black", "Native", "Asian/Pacific Islander")) 
+
+ggplot(adult_dum, aes(x=hours_per_week, y=income, colour=as.factor(race_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by hours Worked with Race", x = "Hours", y = "Income") +
+    scale_colour_manual(name = "Race",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red"),
+                      labels = c("Other", "White", "Black", "Native", "Asian/Pacific Islander")) 
+
+ggplot(adult_dum, aes(x=years_education, y=income, colour=as.factor(race_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Years of Education with Race", x = "Years", y = "Income")+
+    scale_colour_manual(name = "Race",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red"),
+                      labels = c("Other", "White", "Black", "Native", "Asian/Pacific Islander")) 
+
+
+```
+
+
+
+
+```{r eda_marital_status}
+
+# Income by gender
+qplot(race, data = adult, fill = income) +
+  facet_grid(. ~ marital_status) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  ggtitle('Earnings with Race and Marital Status')
+
+# Income by gender
+qplot(education_level, data = adult, fill = income) +
+  facet_grid(. ~ marital_status) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  ggtitle('Earnings with Education and Marital Status')
+
+# Income by gender
+qplot(occupation, data = adult, fill = income) +
+  facet_grid(. ~ marital_status) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  ggtitle('Earnings with Occupation and Marital Status')
+
+```
+
+
+```{r loess_marital_status}
+# Check the continuous variables for linearity against the logodds of Y
+levels(adult$marital_status)
+# Adjusted code for Age (AG) by weight (WT), with y = Status.Num
+ggplot(adult_dum, aes(x=age, y=income, colour=as.factor(marital_status_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Age with Marital Status", x = "Age", y = "Income") +
+      scale_colour_manual(name = "Marital Status",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3"),
+                      labels = c("divorced", "married", "notmarried", "widowed")) 
+
+ggplot(adult_dum, aes(x=hours_per_week, y=income, colour=as.factor(marital_status_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by hours Worked with Marital Status", x = "Hours", y = "Income") +
+      scale_colour_manual(name = "Marital Status",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3"),
+                      labels = c("divorced", "married", "notmarried", "widowed")) 
+
+ggplot(adult_dum, aes(x=years_education, y=income, colour=as.factor(marital_status_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=.75) +
+  ylim(-.2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Years of Education with Marital Status", x = "Years", y = "Income")+
+      scale_colour_manual(name = "Marital Status",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3"),
+                      labels = c("divorced", "married", "notmarried", "widowed")) 
+
+
+```
+
+
+
+
+```{r eda_mixed_variables}
+ggplot(adult, aes(x = hours_worked_span, y = age, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Hours Worked")
+
+
+
+ggplot(adult, aes(x = income, y = age, color=income, fill=income)) + 
+  geom_boxplot(color='black') +
+  facet_grid(. ~ native_region) +
+  ggtitle("Earnings by Age and Origin")
+
+ggplot(adult) + aes(x=hours_per_week, group=income, fill=income) + 
+  geom_histogram()+
+  facet_grid(. ~ occupation) 
+
+# Income by race with percentage
+ggplot(adult, aes(x = hours_worked_span, fill = income)) +
+  geom_bar(position = "fill") +
+  facet_grid(. ~ occupation) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+# Income by race with percentage
+ggplot(adult, aes(x = native_region, fill = income)) +
+  geom_bar(position = "fill") +
+  facet_grid(. ~ occupation) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "Percentage")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+
+ggplot(adult, aes(x = marital_status, y = hours_per_week, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Marital Status and Education")
+```
+
+
+
+
+```{r eda_more_mixed_variables}
+# Hourse worked
+ggplot(adult, aes(x = gender, y = hours_per_week, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  facet_grid(. ~ race)+
+  ggtitle("Earnings by Race, Gender, and Hours Worked")
+
+ggplot(adult, aes(x = gender, y = years_education, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Gender and Education")
+
+ggplot(adult, aes(x = marital_status, y = hours_per_week, colour = income, fill = income)) +
+  geom_boxplot(color='black') +
+  ggtitle("Earnings by Marital Status and Hours")
+
+# Income by gender
+qplot(race, data = adult, fill = income) +
+  facet_grid(. ~ marital_status) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  ggtitle('Earnings with Race and Marital Status')
+
+
+```
+
+
+
+```{r eda_occupation_education}
+# Income by occupation
+qplot(income, data = adult, fill = income) + facet_grid (. ~ occupation)+
+  ggtitle('Earnings with Occupation')
+
+# Income by education
+qplot(income, data = adult, fill = income) + facet_grid (. ~ education_level)+
+  ggtitle('Earnings with Education')
+
+# Income by race
+qplot(education_level, data = adult, fill = income) +
+  facet_grid(. ~ race) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  ggtitle('Earnings with Race and Education')
+
+
+```
+
+
+```{r native region}
+library(treemap)
+adult3 <- adult
+
+# Log-transform the 'capital_gain' column
+adult3$capital_gain_log <- log(adult3$capital_gain + 1)  # Adding 1 to avoid log(0)
+
+# Log-transform the 'capital_gain' column
+adult3$capital_loss_log <- log(adult3$capital_loss + 1)  # Adding 1 to avoid log(0)
+
+## Native REGION and Income Status
+adult3$income.num<-ifelse(adult3$income==">50K", 1, 0)
+
+# Calculate proportions
+positive_proportions2 <- table(adult3$native_region, adult3$income.num)[, "1"] / rowSums(table(adult3$native_region, adult3$income.num))
+
+# Create a data frame
+treemap_data2 <- data.frame(native_region = names(positive_proportions2), positive_proportion = positive_proportions2)
+
+# Sort by positive_proportion
+treemap_data2 <- treemap_data2[order(treemap_data2$positive_proportion, decreasing = TRUE), ]
+
+# Plot the treemap
+treemap(treemap_data2,
+        index = "native_region",
+        vSize = "positive_proportion",
+        title = "Proportion of Positive Income Status by Native Region of Origin")
+
+```
+
+
+
+```{r eda_native_region}
+library(treemap)
+
+# Heat map
+income_status_table <- table(adult$native_region, adult_dum$income)
+
+positive_counts <- income_status_table[, "1"]
+total_counts <- rowSums(income_status_table)
+
+positive_proportions<-positive_counts/total_counts
+
+heatmap_data <- data.frame(native_country = names(positive_proportions), positive_proportion = positive_proportions)
+
+heatmap_data$native_country <- factor(heatmap_data$native_country, levels = heatmap_data$native_country[order(heatmap_data$positive_proportion, decreasing = FALSE)])
+
+
+ggplot(heatmap_data, aes(x = "", y = native_country, fill = positive_proportion)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "blue") +
+  theme_minimal() +
+  labs(title = "Proportion of Positive Income Status by native_country of Origin", x = NULL, y = NULL) +
+        scale_colour_manual(name = "Region",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red",
+                                   "6" = "purple",
+                                   "7" = "brown"),
+                      labels = c("EAsia", "SAsia", "North America", "Central America", "South America", "Europe", "US Territory")) 
+```
+
+
+
+
+
+```{r loess_region, WARNING = FALSE}
+# Check the continuous variables for linearity against the logodds of Y
+
+# Adjusted code for Age (AG) by weight (WT), with y = Status.Num
+ggplot(adult_dum, aes(x=capital_gain_log, y=income, colour=as.factor(native_region_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=2) +
+  ylim(-2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Capital Gain with Region", x = "Gain", y = "Income") +
+      scale_colour_manual(name = "Region",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red",
+                                   "6" = "purple",
+                                   "7" = "brown"),
+                      labels = c("EAsia", "SAsia", "North America", "Central America", "South America", "Europe", "US Territory")) 
+
+# Adjusted code for Age (AG) by weight (WT), with y = Status.Num
+ggplot(adult_dum, aes(x=capital_loss_log, y=income, colour=as.factor(native_region_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=2) +
+  ylim(-2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Capital Loss with Region", x = "Loss", y = "Income") +
+    scale_colour_manual(name = "Region",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red",
+                                   "6" = "purple",
+                                   "7" = "brown"),
+                      labels = c("EAsia", "SAsia", "North America", "Central America", "South America", "Europe", "US Territory")) 
+
+
+# Adjusted code for Age (AG) by weight (WT), with y = Status.Num
+ggplot(adult_dum, aes(x=years_education, y=income, colour=as.factor(native_region_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=2) +
+  ylim(-2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Years of Education with Region", x = "Years", y = "Income") +
+    scale_colour_manual(name = "Region",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red",
+                                   "6" = "purple",
+                                   "7" = "brown"),
+                      labels = c("EAsia", "SAsia", "North America", "Central America", "South America", "Europe", "US Territory")) 
+
+
+# Adjusted code for Age (AG) by weight (WT), with y = Status.Num
+ggplot(adult_dum, aes(x=occupation_num, y=income, colour=as.factor(native_region_num))) + 
+  geom_point() +
+  geom_smooth(method="loess", size=1, span=2) +
+  ylim(-2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by Occupation with Region", x = "Occupation", y = "Income") +
+    scale_colour_manual(name = "Region",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red",
+                                   "6" = "purple",
+                                   "7" = "brown"),
+                      labels = c("EAsia", "SAsia", "North America", "Central America", "South America", "Europe", "US Territory")) 
+
+
+
+ggplot(adult_dum,(aes(x=capital_gain_log,y=income, colour=as.factor(race_num))))+geom_point()+geom_smooth(method="loess",span=2) +
+    ylim(-2, 1.2) +
+  # facet_wrap(~factor(Pclass)) +
+  labs(title = "Income by capital gain with Race", x = "Gain", y = "Income") +
+  scale_colour_manual(name = "Race",
+                        values = c("1" = "orange",  
+                                   "2" = "green",  
+                                   "3" = "#619CFF",  
+                                   "4" = "#F564E3",  
+                                   "5" = "red"),
+                      labels = c("Other", "White", "Black", "Native", "Asian/Pacific Islander"))   
+
+
+
+
+```
+
+
+
+```{r drop_unused_variable}
+adult2 <- adult
+# Log-transform the 'capital_gain' column
+adult2$capital_gain_log <- log(adult2$capital_gain + 1)  # Adding 1 to avoid log(0)
+
+# Log-transform the 'capital_gain' column
+adult2$capital_loss_log <- log(adult2$capital_loss + 1)  # Adding 1 to avoid log(0)
+
+# Drop the specified columns
+adult2 <- subset(adult2, select = -c(age_span, hours_worked_span, similar_pop_count, capital_gain, capital_loss, invested))
+
+```
+
+
+
+
+#Check Logistic Assumptions:
+Sources: https://www.statology.org/assumptions-of-logistic-regression/
+* https://www.statisticssolutions.com/free-resources/directory-of-statistical-analyses/assumptions-of-logistic-regression/
+* https://r4ds.github.io/bookclub-islr/addendum---logistic-regression-assumptions.html
+* https://sscc.wisc.edu/sscc/pubs/RegDiag-R/logistic-regression.html#log_ind
+* http://www.sthda.com/english/articles/36-classification-methods-essentials/148-logistic-regression-assumptions-and-diagnostics-in-r/#google_vignette
+* https://towardsdatascience.com/assumptions-of-logistic-regression-clearly-explained-44d85a22b290
+* Assumption 1: Is the response variable binary?
+```{r binary_check}
+# Assure it is a factor
+adult2$income <- factor(adult2$income, levels = c("<=50K", ">50K"))
+levels(adult2$income)
+
+# Visual inspection (example with 'age' as a predictor)
+ggplot(adult2, aes(x = age, fill = income)) + geom_histogram(position = "dodge")
+
+```
+
+
+# Assumption 2: Independence of Observations
+* The Durbin-Watson statistic (DW) is close to 2 (DW = 1.9966), which indicates no autocorrelation, and the high p-value (p-value = 0.3786) means that you fail to reject the null hypothesis of no autocorrelation
+```{r independence_check}
+# Fit the logistic regression model
+model <- glm(income ~ ., data = adult2, family = binomial)
+
+# Perform the Durbin-Watson test
+dw_result <- dwtest(model)
+dw_result
+
+```
+
+# Assumption 3: No Multicollinearity among predictors.
+* All Variance Inflation Factors (VIFs) are below 5 and visually verified as not being highly correlated.
+* Note: a VIF value below 5 suggests that there is no significant multicollinearity among the predictors, and values below 10 are often considered acceptable.
+```{r multicollinearity_check}
+adult_dum <- adult2
+# one-hot-encode income
+adult_dum$income <- ifelse(adult_dum$income == "<=50K", 0, 1)
+
+# Loop through columns
+for (col in names(adult_dum)) {
+  if (is.factor(adult_dum[[col]])) { # Check if column is a factor
+    levels <- levels(adult_dum[[col]]) # Get levels of the factor
+    adult_dum[[col]] <- as.numeric(factor(adult_dum[[col]], levels = levels)) # Convert factor to numeric based on levels
+    names(adult_dum)[names(adult_dum) == col] <- paste0(col, "_num") # Rename the column
+  }
+}
+
+adult_dum
+
+
+# Fit logistic regression model
+model2 <- glm(income ~ ., family = binomial, data = adult_dum)
+
+# Calculate VIF
+vif_values <- vif(model2)
+vif_values
+
+# Visualize correlation matrix of predictors
+# Visualize correlation matrix of predictors
+cor_matrix <- cor(dplyr::select(adult_dum, -income))
+corrplot(cor_matrix, method='circle')
+
+```
+
+
+# Assumption 4: Check for Extreme Outliers with high influence
+* There are 28 outliers that need to be removed.
+* Note: Data points with an absolute standardized residuals above 3 represent possible outliers and may deserve closer attention.
+```{r}
+library(broom)
+model <- glm(income ~ ., data = adult2, family = binomial)
+plot(model, which = 4, id.n = 10)
+
+# Extract model results
+model.data <- augment(model) %>% 
+  dplyr::mutate(index = dplyr::row_number())  # Use row_number() instead of n()
+
+# Show the top 5
+model.data %>% top_n(10, .cooksd)
+
+# Cook's D influencial outliers
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = income), alpha = 0.5) +
+  theme_bw()
+
+# Influence Plot and list of top influencers - Continuous
+influencePlot(model, id=list(method="noteworthy", n=5, cex=.75, col=carPalette()[1], location="lr"), 
+              main="Influence Plot", sub="Circle area is proportial to Cook's Distance - Continuous" )
+
+# Remove influential data points
+model.data %>% 
+  filter(abs(.std.resid) > 3)
+
+# Remove influential data points based on standardized residuals
+adult.out <- adult2 %>% 
+  slice(-which(abs(model.data$.std.resid) > 3))
+
+model_out <- glm(income ~ ., data = adult.out, family = binomial)
+plot(model_out, which = 4, id.n = 10)
+
+# Influence Plot and list of top influencers - Continuous
+influencePlot(model_out, id=list(method="noteworthy", n=5, cex=.75, col=carPalette()[1], location="lr"), 
+              main="Influence Plot", sub="Circle area is proportial to Cook's Distance - Continuous" )
+```
+
+# Assumption 5: There is a Linear Relationship Between Explanatory (continuous) Variables and the Logit (log odds) of the Response Variable 
+* For categorical predictors, the concept of linearity doesn’t apply in the traditional sense because these variables are represented in the model as a series of dummy variables (one for each category, minus one reference category).
+* Because the dependent variable is categorical and any transformation to dummy variables would not be an accurate assessment of a linear relationship, you don't have to do this assumptions check on the categorical. Below are just some tests.
+* Sources: https://bookdown.org/sarahwerth2024/CategoricalBook/logistic-regression-r.html
+```{r}
+library(tidyverse)
+library(broom)
+
+
+# Fit the logistic regression model
+model <- glm(income ~ ., data = adult_dum, family = binomial)
+
+# Predict the probability (p) of diabetes positivity
+probabilities <- predict(model, type = "response")
+
+# Create binary predicted classes based on a threshold (e.g., 0.5)
+predicted_classes <- ifelse(probabilities > 0.24, "0", "1")
+
+# Visualize the relationship between a continuous predictor (e.g., age) and logit values
+logit_values <- log(probabilities / (1 - probabilities))
+
+# All One-Hot-Encoded variables
+ggplot(adult_dum,(aes(x=logit_values,y=income)))+geom_point()+geom_smooth(method="loess",span=.9)
+
+# logit against age
+ggplot(adult_dum,(aes(x=logit_values,y=age)))+geom_point()+geom_smooth(method="loess",span=.9)
+
+# logit against years_education
+ggplot(adult_dum,(aes(x=logit_values,y=years_education)))+geom_point()+geom_smooth(method="loess",span=.9)
+
+# Check for linearity in continuous variables
+boxTidwell(income ~ age + years_education, data = adult_dum)
+
+```
+
+
+
+
+# Post EDA/assumption check data-split to train and test sets
+```{r create_train_test}
+# Set a seed for reproducibility
+set.seed(1234)
+
+# Calculate the number of rows to select
+sample_size <- round(0.8 * nrow(adult2))
+
+# Create a random sample of indices
+index <- sample(1:nrow(adult2), size = sample_size, replace = FALSE)
+
+# Create the training set using the selected indices
+training_set <- adult2[index, ]
+
+# Create the testing set with the remaining indices
+testing_set <- adult2[-index, ]
+nrow(training_set)
+nrow(testing_set)
+
+testing_set
+
+# For continuous check
+index <- sample(1:nrow(adult_dum), size = round(nrow(adult_dum) * 0.8))
+
+# Splitting
+training_set_LR <- adult_dum[index, ]
+testing_set_LR <- adult_dum[-index, ]
+
+#Outliers removed
+index <- sample(1:nrow(adult.out), size = round(nrow(adult.out) * 0.8))
+
+# Splitting
+training_set_out <- adult.out[index, ]
+testing_set_out <- adult.out[-index, ]
+```
+
+# Initial test of the model without changes
+* Result summary: A review of the 1) full logistic, 2) influential outliers removed, and 3) the One-Hot-Encoded variables models show slight difference in the confusion matrix results and the significance levels. Model4 outperforms model3 and model5 slightly, and all tests have similar AUROC scores and achieve a balance of approximately 80 percent on Sensitivity and Specificity. The one-hot-encoded model found many more variables to be significant, but had lower performance overall.
+```{r initial_model, warning=FALSE}
+
+# Fit a logistic regression model
+model3 <- glm(income ~ ., data = training_set, family = binomial)
+
+# Confidence interval
+# confint(model3)
+
+# Summarize the final selected model
+summary(model3)
+
+# Check for multicollinearity
+vif(model3) 
+
+# Perform Hosmer-Lemeshow goodness of fit test
+# Note: A p-value less than 0.05 typically suggests that the model does not fit the data well.
+hoslem.test(training_set$income, fitted(model3))
+# hoslem.test(training_set_LR$income, fitted(model4)) # dummied variables - test comparison
+
+# Make predictions
+probabilities <- model3 %>% predict(testing_set, type = "response")
+predicted.classes <- ifelse(probabilities > 0.26, ">50K", "<=50K")
+
+# Model accuracy
+accuracy <- mean(predicted.classes==testing_set$income)
+
+# confusion matrix 
+tb <- table(predicted.classes, testing_set$income)
+tb
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb[2, 2] / (tb[2, 2] + tb[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb[1, 1] / (tb[1, 1] + tb[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb[1, 2] + tb[2, 2]) / sum(tb)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb[2, 2] / (tb[2, 2] + tb[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb[1, 1] / (tb[1, 1] + tb[1, 2])
+
+# Calculate AUROC
+roc_obj <- roc(testing_set$income, probabilities)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+
+
+
+################## glm test with influential outliers removed ##############################
+cat("\n\n----------------influential outliers removed--------------\n\n")
+
+# Fit a logistic regression model
+model4 <- glm(income ~ ., data = training_set_out, family = binomial)
+
+# Confidence interval
+# confint(model3)
+
+# Summarize the final selected model
+summary(model4)
+
+# Check for multicollinearity
+vif(model4) 
+
+# Perform Hosmer-Lemeshow goodness of fit test
+# Note: A p-value less than 0.05 typically suggests that the model does not fit the data well.
+hoslem.test(training_set_out$income, fitted(model4))
+# hoslem.test(training_set_LR$income, fitted(model4)) # dummied variables - test comparison
+
+# Make predictions
+probabilities2 <- model4 %>% predict(testing_set_out, type = "response")
+predicted.classes2 <- ifelse(probabilities2 > 0.275, ">50K", "<=50K")
+
+# Model accuracy
+accuracy2 <- mean(predicted.classes2==testing_set_out$income)
+
+# confusion matrix 
+tb2 <- table(predicted.classes2, testing_set_out$income)
+tb2
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity2 <- tb2[2, 2] / (tb2[2, 2] + tb2[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity2 <- tb2[1, 1] / (tb2[1, 1] + tb2[2, 1])
+
+# Calculate Prevalence
+prevalence2 <- (tb2[1, 2] + tb2[2, 2]) / sum(tb2)
+
+# Calculate PPV (Positive Predictive Value)
+ppv2 <- tb2[2, 2] / (tb2[2, 2] + tb2[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv2 <- tb2[1, 1] / (tb2[1, 1] + tb2[1, 2])
+
+# Calculate AUROC
+roc_obj2 <- roc(testing_set_out$income, probabilities2)
+auroc2 <- auc(roc_obj2)
+
+# Print the metrics
+cat("accuracy:", accuracy2, "\n")
+cat("Sensitivity:", sensitivity2, "\n")
+cat("Specificity:", specificity2, "\n")
+cat("Prevalence:", prevalence2, "\n")
+cat("PPV:", ppv2, "\n")
+cat("NPV:", npv2, "\n")
+cat("AUROC:", auroc2, "\n")
+
+
+# full with outliers
+pred_full <- prediction(probabilities, testing_set$income)
+pred_full_per <- performance(pred_full, measure = "tpr", x.measure = "fpr")
+mod1_pred <- data.frame(FP = pred_full_per@x.values[[1]], TP = pred_full_per@y.values[[1]])
+
+# full without outliers
+pred_full_Out <- prediction(probabilities2, testing_set_out$income)
+pred_full_per2 <- performance(pred_full_Out, measure = "tpr", x.measure = "fpr")
+mod2_pred <- data.frame(FP = pred_full_per2@x.values[[1]], TP = pred_full_per2@y.values[[1]])
+
+# plot ROC curve for logistic regression
+g <- ggplot() + 
+  geom_line(data = mod1_pred, aes(x = FP, y = TP, color = 'Full With Outliers')) + 
+  geom_line(data = mod2_pred, aes(x = FP, y = TP, color = 'Full Without Outliers')) +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1)) +
+  ggtitle('ROC Curve') + 
+  labs(x = 'False Positive Rate', y = 'True Positive Rate') 
+
+
+g +  scale_colour_manual(name = 'Classifier', values = c('Full With Outliers'='#E69F00', 
+                                               'Full Without Outliers'='#56B4E9'))
+
+
+######## Base test with all Categorical variables changed to Dummies/Continuous ##########
+cat("\n\n----------------Variables changed to Continuous Dummies--------------\n\n")
+
+# Fit a logistic regression model
+model5 <- glm(income ~ ., data = training_set_LR, family = binomial)
+
+# Confidence interval
+# confint(model3)
+
+# Summarize the final selected model
+summary(model5)
+
+# Check for multicollinearity
+vif(model5) 
+
+# Perform Hosmer-Lemeshow goodness of fit test
+# Note: A p-value less than 0.05 typically suggests that the model does not fit the data well.
+#hoslem.test(training_set$income, fitted(model5))
+# hoslem.test(training_set_LR$income, fitted(model4)) # dummied variables - test comparison
+
+# Make predictions
+probabilities <- model5 %>% predict(testing_set_LR, type = "response")
+predicted.classes2 <- ifelse(probabilities > 0.27, "1", "0")
+
+# Model accuracy
+accuracy <- mean(predicted.classes2==testing_set_LR$income)
+
+# confusion matrix 
+tb <- table(predicted.classes2, testing_set_LR$income)
+tb
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb[2, 2] / (tb[2, 2] + tb[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb[1, 1] / (tb[1, 1] + tb[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb[1, 2] + tb[2, 2]) / sum(tb)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb[2, 2] / (tb[2, 2] + tb[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb[1, 1] / (tb[1, 1] + tb[1, 2])
+
+# Calculate AUROC
+roc_obj <- roc(testing_set_LR$income, probabilities)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+
+```
+
+# Odds ratio for the model removing influencial outliers.
+An OR of x suggests that with each additional year of (the variable), the odds of the outcome occurring increase by approximately ((OR -1)*100) all other variables remaining constant. or if it has a reference variable...compared to the reference variable.
+```{r warning=FALSE}
+summary(model4)
+# Calculate Odds Ratios and 90% Confidence Intervals
+odds_ratios <- exp(coef(model4))
+conf_int <- exp(confint(model4, level = 0.95))
+
+# Identify significant predictors at the 0.05 level
+significant_predictors <- summary(model4)$coefficients[, 4] < 0.05
+
+# Extract Odds Ratios and Confidence Intervals for significant predictors
+# Note: Use names() to match significant predictors by name
+significant_or_ci <- data.frame(
+  OddsRatio = odds_ratios[significant_predictors],
+  LowerCI = conf_int[names(odds_ratios)[significant_predictors], 1],
+  UpperCI = conf_int[names(odds_ratios)[significant_predictors], 2]
+)
+significant_or_ci
+
+```
+
+# Interpretation:
+
+age: An odds ratio (OR) of 1.02560964 means that with each additional year of age, the odds of the outcome occurring increase by approximately 2.56%. The calculation is ((OR - 1) \times 100 = (1.02560964 - 1) \times 100 = 2.56%).
+similar_pop_count: An OR of 1.00000063 indicates an extremely small increase in odds with each unit increase in similar population count. The effect is so small it’s practically negligible.
+years_education: An OR of 1.27846414 suggests that with each additional year of education, the odds of the outcome occurring increase by 27.85%. The calculation is ((1.27846414 - 1) \times 100 = 27.85%).
+marital_statusmarried: An OR of 1.83198084 means that being married is associated with an 83.20% increase in the odds of the outcome occurring compared to not being married.
+marital_statusnotmarried: An OR of 0.55312175 indicates that not being married is associated with a 44.69% decrease in the odds of the outcome occurring compared to being married. The calculation is ((1 - 0.55312175) \times 100 = 44.69%).
+occupationclerical: An OR of 2.73417509 suggests that being in a clerical occupation is associated with a 173.42% increase in the odds of the outcome occurring compared to not being in this occupation.
+occupationhighskill: An OR of 4.87181987 indicates that being in a high-skill occupation is associated with a 387.18% increase in the odds of the outcome occurring compared to not being in this occupation.
+occupationmidskill: An OR of 2.61052015 means that being in a mid-skill occupation is associated with a 161.05% increase in the odds of the outcome occurring compared to not being in this occupation.
+household_rolewife: An OR of 4.11794882 suggests that being the wife in a household is associated with a 311.79% increase in the odds of the outcome occurring compared to not being the wife.
+household_roletenant: An OR of 0.34585959 indicates that being a tenant is associated with a 65.41% decrease in the odds of the outcome occurring compared to not being a tenant.
+household_rolesingle_occ: An OR of 0.29151166 means that being a single occupant is associated with a 70.85% decrease in the odds of the outcome occurring compared to not being a single occupant.
+household_rolerelative: An OR of 0.23532074 suggests that being a relative in a household is associated with a 76.47% decrease in the odds of the outcome occurring compared to not being a relative.
+household_roledepchild: An OR of 0.11687608 indicates that being a dependent child is associated with an 88.31% decrease in the odds of the outcome occurring compared to not being a dependent child.
+gendermale: An OR of 2.45071926 means that being male is associated with a 145.07% increase in the odds of the outcome occurring compared to not being male.
+capital_gain: An OR of 1.00097874 suggests a very slight increase in the odds of the outcome occurring with each unit increase in capital gain.
+capital_loss: An OR of 1.00246863 indicates a slight increase in the odds of the outcome occurring with each unit increase in capital loss.
+hours_per_week: An OR of 1.02929197 means that with each additional hour worked per week, the odds of the outcome occurring increase by approximately 2.93%.
+native_countrySouthAmerica: An OR of 0.19791245 suggests that being from South America is associated with an 80.21% decrease in the odds of the outcome occurring compared to not being from South America.
+investedInvested: An OR of 0.02628912 indicates that having invested is associated with a 97.37% decrease in the odds of the outcome occurring compared to not having invested.
+
+
+
+
+
+
+Drop for code or run testing_set as well:
+
+# Build a reduced model from the significant variables
+* Test cost for automating extracting the reduced model.
+* The testing set would also need to be refined for this formula.
+```{r reduced_model}
+# Get the original variable names (excluding the response variable)
+original_vars <- setdiff(names(training_set), "income")
+
+# Summary of the full model
+summary_full <- summary(model3)
+
+# Extracting significant variables
+significant_vars <- summary_full$coefficients[summary_full$coefficients[, "Pr(>|z|)"] < 0.05, ]
+significant_vars_names <- rownames(significant_vars)
+
+# Initialize an empty string to build the new formula
+new_formula <- "income ~ "
+
+# Create a list to keep track of which categorical variables have all non-reference levels significant
+all_levels_significant <- list()
+
+# Loop through each original variable to check if all non-reference levels are significant
+for(original_var in original_vars) {
+  # Get all non-reference levels of the categorical variable
+  levels <- levels(training_set[[original_var]])[-1] # Exclude the first level which is the reference
+  
+  # Check if all non-reference levels are significant
+  all_significant <- all(sapply(levels, function(lvl) paste0(original_var, lvl) %in% significant_vars_names))
+  
+  # Store the result
+  all_levels_significant[[original_var]] <- all_significant
+}
+
+# Loop through each significant variable
+for(var in significant_vars_names) {
+  # Initialize new_var_expr
+  new_var_expr <- var
+  
+  # Check if var is a level of an original variable
+  for(original_var in original_vars) {
+    if(grepl(original_var, var)) {
+      # Check if all non-reference levels of the variable are significant
+      if(all_levels_significant[[original_var]]) {
+        # If all non-reference levels are significant, use the original variable name
+        new_var_expr <- original_var
+      } else {
+        # If not all levels are significant, construct the new variable expression
+        level <- gsub(paste0("^", original_var), "", var)
+        if(nchar(level) > 0) {
+          new_var_expr <- paste0("(training_set$", original_var, " == '", level, "')")
+        }
+      }
+      # Ensure only the condition is added to the formula, not the logical result
+      new_formula <- paste(new_formula, new_var_expr, sep = " + ")
+      break
+    }
+  }
+}
+
+# Remove the trailing " + " if present
+new_formula <- sub(" \\+ $", "", new_formula)
+
+# Convert the string to a formula
+new_formula <- as.formula(new_formula)
+
+# Fit the reduced model
+reduced_model <- glm(new_formula, data = training_set, family = binomial)
+summary(reduced_model)
+
+# Check for multicollinearity
+vif(reduced_model) 
+
+# Perform Hosmer-Lemeshow goodness of fit test
+# Note: A p-value less than 0.05 typically suggests that the model does not fit the data well.
+hoslem.test(training_set$income, fitted(reduced_model))
+# hoslem.test(training_set_LR$income, fitted(model4)) # dummied variables - test comparison
+
+
+```
+
+
+PCA Sources: https://www.analyticsvidhya.com/blog/2021/09/pca-and-its-underlying-mathematical-principles/
+# PCA full model Test:
+For PC1: marital_status_num and education_level have high positive loading scores, while age has a high negative loading score. These variables significantly influence PC1.
+For PC2: capital_gain and capital_loss are notable due to their high positive loading scores, making them important for PC2.
+For PC3: hours_per_week stands out with a high positive loading score, suggesting its relevance to PC3.
+12 variables are needed for 90 percent.
+```{r}
+pc.result<-prcomp(training_set_LR[,1:14],scale.=TRUE)
+
+#Eigen Vectors
+pc.result$rotation
+
+#Eigen Values
+cat("\n\n----------------Eigen Values--------------\n\n")
+eigenvals<-pc.result$sdev^2
+eigenvals
+
+# Calculate cumulative proportion of variance explained
+cumulative_var <- cumsum(eigenvals) / sum(eigenvals)
+
+# Find the number of PCs needed to retain 90% of the variance
+num_pcs <- which(cumulative_var >= 0.9)[1]
+
+# number of PCs
+num_pcs
+
+#Scree plot
+par(mfrow=c(1,2))
+plot(eigenvals,type="l",main="Scree Plot",ylab="Eigen Values",xlab="PC #")
+plot(eigenvals/sum(eigenvals),type="l",main="Explained Variance",ylab = "Cumulative Proportion", xlab = "Principal Component", ylim=c(0,1))
+cumulative.prop<-cumsum(eigenvals/sum(eigenvals))
+lines(cumulative.prop,type = "o", lty=2)
+abline(h = 0.9, col = "red", lty = 2) # Add a line at 90% variance explained
+legend("topright", legend=c("Prop","Cumulative"),
+       lty=1:2, cex=0.8)
+```
+
+PCA reduced Model:
+PC1: household_role_num (0.49898102), invested_num (-0.38056203), age (-0.36436500)
+PC2: invested_num (0.5153051), capital_loss (0.4491392), years_education (0.2559078)
+PC3: occupation_num (0.63406086), capital_loss (0.36206738), invested_num (0.28760465)
+```{r}
+
+pc.result <- prcomp(training_set_LR[, c("age", "years_education", "capital_gain_log", "capital_loss_log",
+                                   "marital_status_num", "occupation_num", "household_role_num", "gender_num", 
+                                   "hours_per_week")], scale. = TRUE)
+
+#Eigen Vectors
+pc.result$rotation
+
+#Eigen Values
+cat("\n\n----------------Eigen Values--------------\n\n")
+eigenvals<-pc.result$sdev^2
+eigenvals
+
+# Calculate cumulative proportion of variance explained
+cumulative_var <- cumsum(eigenvals) / sum(eigenvals)
+
+# Find the number of PCs needed to retain 90% of the variance
+num_pcs <- which(cumulative_var >= 0.9)[1]
+
+# number of PCs
+num_pcs
+
+#Scree plot
+par(mfrow=c(1,2))
+plot(eigenvals,type="l",main="Scree Plot",ylab="Eigen Values",xlab="PC #")
+plot(eigenvals/sum(eigenvals),type="l",main="Explained Variance",ylab = "Cumulative Proportion", xlab = "Principal Component", ylim=c(0,1))
+cumulative.prop<-cumsum(eigenvals/sum(eigenvals))
+lines(cumulative.prop,type = "o", lty=2)
+abline(h = 0.9, col = "red", lty = 2) # Add a line at 90% variance explained
+legend("topright", legend=c("Prop","Cumulative"),
+       lty=1:2, cex=0.8)
+```
+
+
+
+
+
+# GLMNET Feature Test - one variable was dropped.
+```{r GLMNET_Full}
+library(caret)
+# change the income value names to work with glmnet (greater than sign will not run)
+training_set1 <- training_set
+training_set1$income <- gsub('<=50K', 'less_than_50K', training_set1$income)
+training_set1$income <- gsub('>50K', 'greater_than_50K', training_set1$income)
+
+# Convert 'income' to a factor if it's not already
+training_set1$income <- as.factor(training_set1$income)
+levels(training_set1$income)
+# Ensure that train_control is set up for classification
+train_control <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Now, re-run the GLMNET model training
+set.seed(1234)
+glmnet_model <- train(
+  income ~ ., 
+  data = training_set1,  # Exclude the 'id_number' column
+  method = "glmnet",
+  trControl = train_control,
+  preProcess = c("center", "scale"),  # Standardize predictors
+  tuneLength = 10,
+  metric = "ROC"  # Use AUROC curve error metric
+)
+
+# Comment on which predictors were left or dropped
+coef(glmnet_model$finalModel, glmnet_model$bestTune$lambda)
+```
+
+# GLMNET Feature Test reduced_ - one variable was dropped.
+```{r GLMNET_reduced}
+library(caret)
+# change the income value names to work with glmnet (greater than sign will not run)
+training_set1 <- training_set_out
+training_set1$income <- gsub('<=50K', 'less_than_50K', training_set1$income)
+training_set1$income <- gsub('>50K', 'greater_than_50K', training_set1$income)
+
+# Convert 'income' to a factor if it's not already
+training_set1$income <- as.factor(training_set1$income)
+levels(training_set1$income)
+# Ensure that train_control is set up for classification
+train_control <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Now, re-run the GLMNET model training
+set.seed(1234)
+glmnet_model <- train(
+  income ~ ., 
+  data = training_set1,  # Exclude the 'id_number' column
+  method = "glmnet",
+  trControl = train_control,
+  preProcess = c("center", "scale"),  # Standardize predictors
+  tuneLength = 10,
+  metric = "ROC"  # Use AUROC curve error metric
+)
+
+# Comment on which predictors were left or dropped
+coef(glmnet_model$finalModel, glmnet_model$bestTune$lambda)
+```
+
+
+
+# Stepwise feature selection using AIC for the step evaluation
+* Sources: http://www.sthda.com/english/articles/36-classification-methods-essentials/150-stepwise-logistic-regression-essentials-in-r/
+* Note: When comparing models, the one with the lower AIC is generally preferred because it suggests a better fit with fewer parameters.
+* To compare models of different sizes using deviance, you need to adjust for the number of predictors, which is what AIC does by penalizing more complex models2.
+```{r comparative_test, warning=FALSE}
+library(MASS)
+cat("\n\n--------modelFull--------\n\n") # same as model 3 (46 total variables)
+full.model <- glm(income ~ ., data = training_set, family = binomial)
+coef(full.model)
+
+# Make predictions
+probabilities <- full.model %>% predict(testing_set, type = "response")
+predicted.classes <- ifelse(probabilities > 0.24, ">50K", "<=50K")
+# Prediction accuracy
+observed.classes <- testing_set$income
+mean(predicted.classes == observed.classes)
+
+summary(full.model)
+# confusion matrix 
+tb <- table(predicted.classes, testing_set$income)
+tb
+
+# Model accuracy
+accuracy <- mean(predicted.classes==testing_set$income)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb[2, 2] / (tb[2, 2] + tb[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb[1, 1] / (tb[1, 1] + tb[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb[1, 2] + tb[2, 2]) / sum(tb)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb[2, 2] / (tb[2, 2] + tb[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb[1, 1] / (tb[1, 1] + tb[1, 2])
+
+# Calculate AUROC
+roc_obj <- roc(testing_set$income, probabilities)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+
+cat("\n\n--------modelAICStep--------\n\n") # (35 variables recommended)
+step.model <- full.model %>% stepAIC(trace = FALSE)
+coef(step.model)
+
+# Make predictions
+probabilities <- predict(step.model, testing_set, type = "response")
+predicted.classes <- ifelse(probabilities > 0.24, ">50K", "<=50K")
+
+# confusion matrix 
+tb <- table(predicted.classes, testing_set$income)
+tb
+
+summary(step.model)
+# Model accuracy
+accuracy <- mean(predicted.classes==testing_set$income)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb[2, 2] / (tb[2, 2] + tb[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb[1, 1] / (tb[1, 1] + tb[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb[1, 2] + tb[2, 2]) / sum(tb)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb[2, 2] / (tb[2, 2] + tb[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb[1, 1] / (tb[1, 1] + tb[1, 2])
+
+# Calculate AUROC
+roc_obj <- roc(testing_set$income, probabilities)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+```
+
+
+
+
+
+
+# Basic Stepwise: backward, forward, both
+Note: There was no difference in the models suggesting the model complexity is already as simple as possibly
+* The one-hot-encoding of categorical variables may also be impacting the selection process.
+```{r feature_selection, warning=FALSE}
+
+cat("\n\n--------Backward Elimination---------\n\n")
+# backward selection
+step(full.model, trace = F, scope = list(lower=formula(full.model), upper=formula(full.model)),
+     direction = 'backward')
+
+cat("\n\n--------Forward Elimination---------\n\n")
+# forward selection
+step(full.model, trace = F, scope = list(lower=formula(full.model), upper=formula(full.model)),
+     direction = 'forward')
+
+cat("\n\n--------Both Elimination---------\n\n")
+# forward selection
+step(full.model, trace = F, scope = list(lower=formula(full.model), upper=formula(full.model)),
+     direction = 'both')
+```
+
+# Stepwise for influencial outliers
+```{r feature_selection2, warning=FALSE}
+
+cat("\n\n--------Backward Elimination---------\n\n")
+# backward selection
+step(model4, trace = F, scope = list(lower=formula(model4), upper=formula(model4)),
+     direction = 'backward')
+
+cat("\n\n--------Forward Elimination---------\n\n")
+# forward selection
+step(model4, trace = F, scope = list(lower=formula(model4), upper=formula(model4)),
+     direction = 'forward')
+
+cat("\n\n--------Both Elimination---------\n\n")
+# forward selection
+step(model4, trace = F, scope = list(lower=formula(model4), upper=formula(model4)),
+     direction = 'both')
+```
+
+Reduced model that eliminates non significant variables and colinearity between those variables.
+```{r reduced_model_form}
+
+new_formula2 <- as.formula(income ~ +age + years_education + capital_gain_log + capital_loss_log +
+                             marital_status+ occupation + household_role + gender + race + hours_per_week)
+
+new_formula2
+
+# Fit the reduced model
+reduced_model2 <- glm(new_formula2, data = training_set, family = binomial)
+summary(reduced_model2)
+
+# Check for multicollinearity
+vif(reduced_model2) 
+
+# Perform Hosmer-Lemeshow goodness of fit test
+# Note: A p-value less than 0.05 typically suggests that the model does not fit the data well.
+hoslem.test(training_set$income, fitted(reduced_model2))
+
+# Make predictions
+probabilities <- reduced_model2 %>% predict(testing_set, type = "response")
+predicted.classes <- ifelse(probabilities > 0.27, ">50K", "<=50K")
+
+# Model accuracy
+accuracy <- mean(predicted.classes==testing_set$income)
+
+# confusion matrix 
+tb <- table(predicted.classes, testing_set$income)
+tb
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb[2, 2] / (tb[2, 2] + tb[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb[1, 1] / (tb[1, 1] + tb[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb[1, 2] + tb[2, 2]) / sum(tb)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb[2, 2] / (tb[2, 2] + tb[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb[1, 1] / (tb[1, 1] + tb[1, 2])
+
+# Calculate AUROC
+roc_obj <- roc(testing_set$income, probabilities)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+
+
+
+############### Outliers Removed #############################
+
+# Fit the reduced model
+reduced_model3 <- glm(new_formula2, data = training_set_out, family = binomial)
+summary(reduced_model2)
+
+# Check for multicollinearity
+vif(reduced_model3) 
+
+# Perform Hosmer-Lemeshow goodness of fit test
+# Note: A p-value less than 0.05 typically suggests that the model does not fit the data well.
+hoslem.test(training_set_out$income, fitted(reduced_model3))
+
+# Make predictions
+probabilities2 <- reduced_model3 %>% predict(testing_set_out, type = "response")
+predicted.classes2 <- ifelse(probabilities2 > 0.27, ">50K", "<=50K")
+
+# Model accuracy
+accuracy <- mean(predicted.classes2==testing_set_out$income)
+
+# confusion matrix 
+tb2 <- table(predicted.classes2, testing_set_out$income)
+tb2
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity2 <- tb2[2, 2] / (tb2[2, 2] + tb2[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity2 <- tb2[1, 1] / (tb2[1, 1] + tb2[2, 1])
+
+# Calculate Prevalence
+prevalence2 <- (tb2[1, 2] + tb2[2, 2]) / sum(tb2)
+
+# Calculate PPV (Positive Predictive Value)
+ppv2 <- tb2[2, 2] / (tb2[2, 2] + tb2[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv2 <- tb2[1, 1] / (tb2[1, 1] + tb2[1, 2])
+
+# Calculate AUROC
+roc_obj2 <- roc(testing_set_out$income, probabilities2)
+auroc2 <- auc(roc_obj)
+
+# Print the metrics
+cat("accuracy:", accuracy2, "\n")
+cat("Sensitivity:", sensitivity2, "\n")
+cat("Specificity:", specificity2, "\n")
+cat("Prevalence:", prevalence2, "\n")
+cat("PPV:", ppv2, "\n")
+cat("NPV:", npv2, "\n")
+cat("AUROC:", auroc2, "\n")
+
+
+# full with outliers
+pred_full <- prediction(probabilities, testing_set$income)
+pred_full_per <- performance(pred_full, measure = "tpr", x.measure = "fpr")
+mod1_pred <- data.frame(FP = pred_full_per@x.values[[1]], TP = pred_full_per@y.values[[1]])
+
+# full without outliers
+pred_full_Out <- prediction(probabilities2, testing_set_out$income)
+pred_full_per2 <- performance(pred_full_Out, measure = "tpr", x.measure = "fpr")
+mod2_pred <- data.frame(FP = pred_full_per2@x.values[[1]], TP = pred_full_per2@y.values[[1]])
+
+# plot ROC curve for logistic regression
+g <- ggplot() + 
+  geom_line(data = mod1_pred, aes(x = FP, y = TP, color = 'Reduced With Outliers')) + 
+  geom_line(data = mod2_pred, aes(x = FP, y = TP, color = 'Reduced Without Outliers')) +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1)) +
+  ggtitle('ROC Curve') + 
+  labs(x = 'False Positive Rate', y = 'True Positive Rate') 
+
+
+g +  scale_colour_manual(name = 'Classifier', values = c('Reduced With Outliers'='red', 
+                                               'Reduced Without Outliers'='blue'))
+```
+
+
+# Odds ratio for the reduced model removing influencial outliers.
+An OR of x suggests that with each additional year of (the variable), the odds of the outcome occurring increase by approximately ((OR -1)*100) all other variables remaining constant. or if it has a reference variable...compared to the reference variable.
+```{r odds_ration_predict, Warning=FALSE}
+
+summary(reduced_model3)
+# Calculate Odds Ratios and 90% Confidence Intervals
+odds_ratios <- exp(coef(reduced_model3))
+conf_int <- exp(confint(reduced_model3, level = 0.95))
+
+# Identify significant predictors at the 0.05 level
+significant_predictors <- summary(reduced_model3)$coefficients[, 4] < 0.05
+
+# Extract Odds Ratios and Confidence Intervals for significant predictors
+# Note: Use names() to match significant predictors by name
+significant_or_ci <- data.frame(
+  OddsRatio = odds_ratios[significant_predictors],
+  LowerCI = conf_int[names(odds_ratios)[significant_predictors], 1],
+  UpperCI = conf_int[names(odds_ratios)[significant_predictors], 2]
+)
+significant_or_ci
+
+```
+
+
+
+# Most of the residuals fall within +/- 3
+```{r logistic_resd}
+
+# create a data frame to store information regarding deviance residuals
+index <- 1:dim(training_set)[1]
+dev_resid <- residuals(model3)
+income <- training_set$income
+dff <- data.frame(index, dev_resid, income)
+
+ggplot(dff, aes(x = index, y = dev_resid, color = income)) +
+  geom_point() + 
+  geom_hline(yintercept = 3, linetype = 'dashed', color = 'blue') +
+  geom_hline(yintercept = -3, linetype = 'dashed', color = 'blue')
+```
+
+
+
+# Objective 1: Simple GLM and Interpretation
+```{r secondary_train_test}
+
+# Set a seed for reproducibility
+set.seed(1234)
+
+# Calculate the number of rows to select
+sample_size2 <- round(0.8 * nrow(adult3))
+
+# Create a random sample of indices
+index2 <- sample(1:nrow(adult3), size = sample_size2, replace = FALSE)
+
+# Create the training set using the selected indices
+training_set2 <- adult3[index, ]
+
+# Create the testing set with the remaining indices
+testing_set2 <- adult3[-index, ]
+nrow(training_set2)
+nrow(testing_set2)
+
+```
+
+
+## Full Model (With Outliers)
+```{r}
+
+set.seed(1234)
+# Logging Capital
+## Train
+capital_data_training<-training_set2[,c("capital_gain","capital_loss")]
+
+capital_data_training <- capital_data_training %>%
+  mutate(
+    capital_gain = as.numeric(capital_gain) + 0.000001,
+    capital_loss = as.numeric(capital_loss) + 0.000001
+  ) %>%
+  mutate(log_capital_gain = log(capital_gain),
+    log_capital_loss = log(capital_loss)
+  )
+
+training_set2<-cbind(training_set2, capital_data_training)
+
+# Assigning classes in transformed dataset
+
+training_set2$age<-as.numeric(training_set2$age)
+training_set2$workclass<-factor(training_set2$workclass)
+training_set2$education_level<-factor(training_set2$education_level)
+training_set2$years_education<-as.numeric(training_set2$years_education)
+training_set2$marital_status<-factor(training_set2$marital_status)
+training_set2$occupation<-factor(training_set2$occupation)
+training_set2$household_role<-factor(training_set2$household_role)
+#training_set$continent<-factor(training_set$continent)
+training_set$capital_loss_log<-as.numeric(training_set$capital_loss_log)
+training_set$capital_gain_log-as.numeric(training_set$capital_gain_log)
+
+
+## Test
+
+capital_data_testing <- testing_set2[, c("capital_gain", "capital_loss")]
+
+capital_data_testing <- capital_data_testing %>%
+  mutate(
+    capital_gain = as.numeric(capital_gain) + 0.000001,
+    capital_loss = as.numeric(capital_loss) + 0.000001
+  ) %>%
+  mutate(log_capital_gain = log(capital_gain),
+    log_capital_loss = log(capital_loss)
+  )
+
+
+testing_set2 <- cbind(testing_set2, capital_data_testing)
+
+# Assigning classes in transformed dataset
+testing_set2$age <- as.numeric(testing_set2$age)
+testing_set2$workclass <- factor(testing_set2$workclass)
+testing_set2$education_level <- factor(testing_set2$education_level)
+testing_set2$years_education <- as.numeric(testing_set2$years_education)
+testing_set2$marital_status <- factor(testing_set2$marital_status)
+testing_set2$occupation <- factor(testing_set2$occupation)
+testing_set2$household_role <- factor(testing_set2$household_role)
+#testing_set$continent <- factor(testing_set$continent)
+testing_set$capital_loss_log <- as.numeric(testing_set$capital_loss_log)
+testing_set$capital_gain_log <- as.numeric(testing_set$capital_gain_log)
+
+
+
+glm_final<-glm(income.num~age+workclass+education_level+years_education+marital_status+occupation+household_role+race+native_region+capital_loss_log+capital_gain_log, data=training_set2, family="binomial")
+
+
+# summary(glm_final)
+
+# cbind("Coefficients" = coef(glm_final), #confint.default(glm_final, level=0.95))
+
+```
+
+
+### ROC: Full Model With Outliers
+
+```{r}
+
+set.seed(1234)
+
+
+glm_final<-glm(income.num~age+workclass+education_level+years_education+marital_status+occupation+household_role+race+native_region+log_capital_loss+log_capital_gain, data=training_set2, family="binomial")
+
+
+
+predicted_probs_final <- predict(glm_final, newdata = testing_set2, type = "response")
+
+testing_set2$income.num <- ifelse(testing_set2$income == ">50K", 1, 0)
+
+
+roc_curve_final <- roc(testing_set2$income, predicted_probs_final)
+
+optimal_threshold_final<- coords(roc_curve_final, "best", best.method = "closest.topleft")
+
+plot(roc_curve_final, main = "ROC Curve With Outliers", col = "blue")
+abline(a = 0, b = 1, lty = 2, col = "red")  
+legend("bottomright", legend = paste("AUC =", round(auc(roc_curve_final), 5)), col = "blue", lwd = 2)
+
+
+
+
+```
+
+AUROC of glm model with outliers is 88.781%
+
+
+### Metrics: Full Model with Outliers
+
+```{r}
+
+
+set.seed(1234)
+
+glm_final<-glm(income.num~age+workclass+education_level+years_education+marital_status+occupation+household_role+race+native_region+log_capital_loss+log_capital_gain, data=training_set2, family="binomial")
+
+testing_set2<-cbind(testing_set2, capital_data_testing)
+
+predicted_probs_final <- predict(glm_final, newdata = testing_set2, type = "response")
+
+testing_set2$income.num <- ifelse(testing_set2$income == "<=50K", 1, 0)
+
+
+predicted_classes_final <- ifelse(predicted_probs_final < optimal_threshold_final$threshold,1, 0)
+
+result_df <- data.frame(Index = as.numeric(names(predicted_classes_final)),
+                         Predicted_Class = as.factor(predicted_classes_final))
+
+confusion_matrix_final <- confusionMatrix(result_df$Predicted_Class, factor(testing_set2$income.num))
+
+confusion_matrix_final
+
+
+
+
+
+
+```
+
+
+
+
+## Reduced Model (With Outliers)
+
+```{r}
+
+set.seed(1234)
+
+
+glm_final<-glm(income.num~age+years_education+marital_status+occupation+household_role+gender+race+log_capital_loss+log_capital_gain, data=training_set2, family="binomial")
+
+
+#summary(glm_final)
+
+
+```
+
+
+### ROC: Reduced Model With Outliers
+
+```{r}
+set.seed(1234)
+
+# Reduced Model
+
+glm_final<-glm(income.num~age+years_education+marital_status+occupation+household_role+gender+race+capital_loss_log+capital_gain_log, data=training_set2, family="binomial")
+
+
+predicted_probs_final <- predict(glm_final, newdata = testing_set2, type = "response")
+
+testing_set2$income.num <- ifelse(testing_set2$income == ">50K", 1, 0)
+
+
+roc_curve_final <- roc(testing_set2$income, predicted_probs_final)
+
+optimal_threshold_final<- coords(roc_curve_final, "best", best.method = "closest.topleft")
+
+plot(roc_curve_final, main = "ROC Curve of Reduced Model With Outliers", col = "blue")
+abline(a = 0, b = 1, lty = 2, col = "red")  
+legend("bottomright", legend = paste("AUC =", round(auc(roc_curve_final), 5)), col = "blue", lwd = 2)
+
+
+
+
+
+
+
+
+```
+
+### Metrics: Reduced Model With Outliers
+
+```{r}
+# Reduced Model
+glm_final<-glm(income.num~age+years_education+marital_status+occupation+household_role+gender+race+capital_loss_log+capital_gain_log, data=training_set2, family="binomial")
+
+testing_set3<-cbind(testing_set2, capital_data_testing)
+
+predicted_probs_final <- predict(glm_final, newdata = testing_set3, type = "response")
+
+testing_set3$income.num <- ifelse(testing_set3$income == "<=50K", 1, 0)
+
+
+predicted_classes_final <- ifelse(predicted_probs_final < optimal_threshold_final$threshold,1, 0)
+
+result_df <- data.frame(Index = as.numeric(names(predicted_classes_final)),
+                         Predicted_Class = as.factor(predicted_classes_final))
+
+confusion_matrix_final_reduced_with_outliers <- confusionMatrix(result_df$Predicted_Class, factor(testing_set3$income.num))
+
+confusion_matrix_final_reduced_with_outliers
+
+
+
+
+
+```
+
+## Reduced Model Without Outliers
+
+```{r}
+
+set.seed(1234)
+
+outlier_indices <- c(4569, 5386, 10459, 15377, 17040, 18437, 20177, 31369, 32215, 32562)
+training_set_outliers_removed <- training_set2[-outlier_indices, ]
+
+outlier_indices <- c(4569, 5386, 10459, 15377, 17040, 18437, 20177, 31369, 32215, 32562)
+testing_set_outliers_removed <- testing_set3[-outlier_indices, ]
+
+
+
+glm_final_reduced_without_outliers<-glm(income.num~age+years_education+marital_status+occupation+household_role+gender+race+capital_loss_log+capital_gain_log, data=training_set_outliers_removed, family="binomial")
+
+
+```
+
+
+
+### ROC: Reduced Model Without Outliers
+
+```{r}
+
+# AUROC
+
+glm_final<-glm(income.num~age+years_education+marital_status+occupation+household_role+gender+race+capital_loss_log+capital_gain_log, data=training_set_outliers_removed, family="binomial")
+
+
+predicted_probs_final <- predict(glm_final, newdata = testing_set_outliers_removed, type = "response")
+
+testing_set_outliers_removed$income.num <- ifelse(testing_set_outliers_removed$income == ">50K", 1, 0)
+
+
+roc_curve_final <- roc(testing_set_outliers_removed$income, predicted_probs_final)
+
+optimal_threshold_final<- coords(roc_curve_final, "best", best.method = "closest.topleft")
+
+plot(roc_curve_final, main = "ROC Curve of Reduced Model Without Outliers", col = "blue")
+abline(a = 0, b = 1, lty = 2, col = "red")  
+legend("bottomright", legend = paste("AUC =", round(auc(roc_curve_final), 5)), col = "blue", lwd = 2)
+
+
+```
+
+
+### Metrics:  Reduced Model Without Outliers
+
+```{r}
+set.seed(1234)
+
+glm_final<-glm(income.num~age+years_education+marital_status+occupation+household_role+gender+race+log_capital_loss+log_capital_gain, data=training_set_outliers_removed, family="binomial")
+
+
+predicted_probs_final <- predict(glm_final, newdata = testing_set_outliers_removed, type = "response")
+
+testing_set_outliers_removed$income.num <- ifelse(testing_set_outliers_removed$income == "<=50K", 1, 0)
+
+
+predicted_classes_final <- ifelse(predicted_probs_final < optimal_threshold_final$threshold,1, 0)
+
+result_df <- data.frame(Index = as.numeric(names(predicted_classes_final)),
+                         Predicted_Class = as.factor(predicted_classes_final))
+
+confusion_matrix_reduced_without_outliers <- confusionMatrix(result_df$Predicted_Class, factor(testing_set_outliers_removed$income.num))
+
+confusion_matrix_reduced_without_outliers
+
+```
+
+Minimal change in performance with removal of outliers. We will move forward with the reduced model including the outliers
+
+
+
+## Model Interpretation: Reduced Model (With Outliers)
+
+```{r}
+
+glm_final<-glm(income.num~age+years_education+marital_status+occupation+household_role+gender+race+capital_loss_log+capital_gain_log, data=training_set2, family="binomial")
+
+summary(glm_final)
+
+```
+
+
+```{r}
+
+
+set.seed(1234)
+
+coef(glm_final)
+exp(cbind("Coefficient" = coef(glm_final), confint.default(glm_final, level=0.95)))
+
+```
+
+Intercept (Beta_0):
+Using a chi-square test at the 95% confidence level, the coefficient of the intercept (Beta_0) is estimated at -7.498387, with a p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_0 is equal to 0. The confidence interval (CI) for Beta_0 is (-8.020812970, -6.97596079).
+
+Age (Beta_1):
+Using a chi-square test at the 95% confidence level, the coefficient of the age variable (Beta_1) is estimated at 0.016518, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_1 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that a 10-unit change in age corresponds to a 1.179607 factor increase in the odds of being high income by approximately 1.02, with a confidence interval between (1.1424937, 1.2179269).
+
+Years of Education (Beta_2):
+Using a chi-square test at the 95% confidence level, the coefficient of the years_education variable (Beta_2) is estimated at 0.308309, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_2 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that a 10-unit change in years of education corresponds to a substantial increase in the odds of being high income, with a 21.825787 factor increase of approximately 1.36, and a confidence interval between (18.25955, 26.08852).
+
+Marital Status:
+Married (Beta_3):
+Using a chi-square test at the 95% confidence level, the coefficient of the marital_statusmarried variable (Beta_3) is estimated at 0.496526, with a final p-value of 0.00430. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_3 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a married individual making >50K are 1.643003 times greater than individuals who are divorced, with a confidence interval between (1.168419, 2.310352).
+
+Not Married (Beta_4):
+Using a chi-square test at the 95% confidence level, the coefficient of the marital_statusnotmarried variable (Beta_4) is estimated at -0.586497, with a final p-value of 6.80e-12. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_4 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of an unmarried individual making >50K are 5.562727e-01 times lower than individuals who are divorced, with a confidence interval between (.4704704, .6577234).
+
+Widowed (Beta_5):
+Using a chi-square test at the 95% confidence level, the coefficient of the marital_statuswidowed variable (Beta_5) is estimated at -0.194806, with a final p-value of 0.22970. Given the p-value is above our alpha threshold of 0.05, there is not sufficient evidence to reject the null hypothesis that Beta_5 is equal to 0.
+
+Occupation:
+Clerical (Beta_6):
+Using a chi-square test at the 95% confidence level, the coefficient of the occupationclerical variable (Beta_6) is estimated at 0.908345, with a final p-value of 1.61e-10. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_6 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a clerical worker making >50K are  2.480215 times higher than those of an agricultural worker, with a confidence interval between (1.877497e+00, 3.276418e+00).
+
+High Skill (Beta_7):
+Using a chi-square test at the 95% confidence level, the coefficient of the occupationhighskill variable (Beta_7) is estimated at 1.352085, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_7 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a high-skill worker making >50K are  3.865477 times higher than those of an agricultural worker, with a confidence interval between (3.010316, 4.963568).
+
+Low Skill (Beta_8):
+Using a chi-square test at the 95% confidence level, the coefficient of the occupationlowskill variable (Beta_8) is estimated at -0.053504, with a final p-value of 0.72441. Given the p-value is above our alpha threshold of 0.05, there is not sufficient evidence to reject the null hypothesis that Beta_8 is equal to 0.
+
+Mid Skill (Beta_9):
+Using a chi-square test at the 95% confidence level, the coefficient of the occupationmidskill variable (Beta_9) is estimated at 0.857840, with a final p-value of 3.55e-11. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_9 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a mid-skill worker making >50K are 2.358061 times higher than those of an agricultural worker, with a confidence interval between (1.829278, 3.039697).
+
+Household Role:
+Husband (Beta_10):
+Using a chi-square test at the 95% confidence level, the coefficient of the household_rolehusband variable (Beta_10) is estimated at 2.275175, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_10 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a husband making >50K are 9.729618 times higher than those of a dependent, with a confidence interval between (6.434549, 14.71206).
+
+Relative (Beta_11):
+Using a chi-square test at the 95% confidence level, the coefficient of the household_rolerelative variable (Beta_11) is estimated at 0.697999, with a final p-value of 0.00605. Given the p-value is below our alpha threshold of 0.05, there is sufficient evidence to reject the null hypothesis that Beta_11 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a relative within a family household making >50K are 2.009726 times higher than those of a dependent, with a confidence interval between (1.220959e+00, 3.308055e+00).
+
+Single Occupant (Beta_12):
+Using a chi-square test at the 95% confidence level, the coefficient of the household_rolesingle_occ variable (Beta_12) is estimated at 0.989746, with a final p-value of 6.94e-09. Given the p-value is below our alpha threshold of 0.05, there is sufficient evidence to reject the null hypothesis that Beta_12 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a single-occupant making >50K are 27.83640 times higher than those of a dependent, with a confidence interval between (1.924844e+00, 3.760856e+00).
+
+Tenant (Beta_13):
+Using a chi-square test at the 95% confidence level, the coefficient of the household_roletenant variable (Beta_13) is estimated at 1.271726, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is sufficient evidence to reject the null hypothesis that Beta_13 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a tenant making >50K are 3.567003 times higher than those of a dependent, with a confidence interval between (2.679115e+00, 4.749146e+00).
+
+Wife (Beta_14):
+Using a chi-square test at the 95% confidence level, the coefficient of the household_rolewife variable (Beta_14) is estimated at 3.32634446, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is sufficient evidence to reject the null hypothesis that Beta_14 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a wife within the household making >50K are  27.84856 timeshigher than those of a dependent, with a confidence interval between (17.92502, 43.22814).
+
+Gender:
+Male (Beta_15):
+Using a chi-square test at the 95% confidence level, the coefficient of the gendermale variable (Beta_15) is estimated at 0.870530, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is sufficient evidence to reject the null hypothesis that Beta_15 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a male making >50K are 2.388176 times higher than those of a female, with a confidence interval between (2.043648, 2.790788).
+
+Race:
+Black (Beta_16):
+Using a chi-square test at the 95% confidence level, the coefficient of the raceblack variable (Beta_16) is estimated at 0.081020, with a final p-value of 0.53106. Given the p-value is above our alpha threshold of 0.05, there is not sufficient evidence to reject the null hypothesis that Beta_16 is equal to 0.
+
+Native (Beta_17):
+Using a chi-square test at the 95% confidence level, the coefficient of the racenative variable (Beta_17) is estimated at -0.218989, with a final p-value of 0.38926. Given the p-value is above our alpha threshold of 0.05, there is not sufficient evidence to reject the null hypothesis that Beta_17 is equal to 0.
+
+White (Beta_18):
+Using a chi-square test at the 95% confidence level, the coefficient of the racewhite variable (Beta_18) is estimated at 0.218540, with a final p-value of 0.04187. Given the p-value is below our alpha threshold of 0.05, there is some evidence to reject the null hypothesis that Beta_18 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that the odds of a white individual making >50K are 1.244259 times higher than those of an asian individual, with a confidence interval between (1.008067, 1.535791).
+
+Logged Capital Loss (Beta_19):
+Using a chi-square test at the 95% confidence level, the coefficient of the log_capital_loss variable (Beta_19) is estimated at 0.051903, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_19 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that a 10-unit change in log_capital_loss corresponds to a 1.68040 factor increase in the odds of being high income, with a confidence interval between (1.045891, 1.060709).
+
+Logged Capital Gain (Beta_20):
+Using a chi-square test at the 95% confidence level, the coefficient of the log_capital_gain variable (Beta_20) is estimated at 0.077103, with a final p-value of < 2e-16. Given the p-value is below our alpha threshold of 0.05, there is strong evidence to reject the null hypothesis that Beta_20 is equal to 0.
+
+With these results, there is evidence at the 95% confidence level that a 10-unit change in log_capital_gain corresponds to a 2.161985 factor increase in the odds of being high income, with a confidence interval between (2.050229, 2.279832)
+
+
+
+# Objective 2: Predictive Models
+
+# Steven's function for statistics
+# Generic Function to get all the statistics
+```{r Print_Model_Metrics_Function}
+# Example:
+
+# print_model_metrics(model = generic_model, test_data = testing_set, response_var = "income", pos_value = "Over.50K", threshold = 0.28, model_title = "Simple GLM")
+
+#
+
+library(caret)
+
+library(pROC)
+
+ 
+
+print_model_metrics <-
+
+  function(model,
+
+           test_data,
+
+           response_var,
+
+           pos_value,
+
+           threshold = 0.5,
+
+           model_title = "Model Metrics") {
+
+    # Ensure that the response variable is a factor with exactly two levels
+
+    response_factor <-
+
+      factor(test_data[[response_var]], levels = unique(test_data[[response_var]]))
+
+   
+
+    # Make sure we have exactly two levels
+
+    if (length(levels(response_factor)) != 2) {
+
+      stop("Response variable must have exactly two levels.")
+
+    }
+
+   
+
+    # Make predictions and convert to factor with the specified positive value
+
+    probabilities <- predict(model, test_data, type = "response")
+
+    predicted_classes <-
+
+      factor(ifelse(
+
+        probabilities > threshold,
+
+        levels(response_factor)[2],
+
+        levels(response_factor)[1]
+
+      ),
+
+      levels = levels(response_factor))
+
+   
+
+    # Calculate the confusion matrix using caret, using pos_value to specify the positive class
+
+    cm <-
+
+      confusionMatrix(predicted_classes, response_factor, positive = pos_value)
+
+   
+
+    # Extract metrics from the confusion matrix
+
+    accuracy <- cm$overall['Accuracy']
+
+    sensitivity <- cm$byClass['Sensitivity']
+
+    specificity <- cm$byClass['Specificity']
+
+    prevalence <- cm$byClass['Prevalence']
+
+    ppv <- cm$byClass['Pos Pred Value']
+
+    npv <- cm$byClass['Neg Pred Value']
+
+   
+
+    # Calculate AUROC using pROC, ensuring numeric conversion accounts for positive class being '1'
+
+    roc_obj <-
+
+      roc(response = as.numeric(response_factor) - 1,
+
+          predictor = probabilities)
+
+    auroc <- auc(roc_obj)
+
+   
+
+    # Replace NA values with zero or another appropriate placeholder
+
+    metrics_values <-
+
+      c(accuracy,
+
+        sensitivity,
+
+        specificity,
+
+        prevalence,
+
+        ppv,
+
+        npv,
+
+        auroc)
+
+    metrics_values[is.na(metrics_values)] <- 0
+
+   
+
+    # Compile the metrics into a data frame
+
+    metrics <- data.frame(
+
+      Metric = c(
+
+        "Accuracy",
+
+        "Sensitivity",
+
+        "Specificity",
+
+        "Prevalence",
+
+        "PPV",
+
+        "NPV",
+
+        "AUROC"
+
+      ),
+
+      Value = metrics_values
+
+    )
+
+   
+
+    # Prepare the caption with the threshold information
+
+    aic_val <- AIC(model)
+
+   
+
+    full_caption <-
+
+      sprintf("%s\nThreshold: %s\nAIC: %.2f",
+
+              model_title,
+
+              threshold,
+
+              aic_val)
+
+   
+
+    # Print the metrics table using knitr
+
+    knitr::kable(
+
+      metrics,
+
+      col.names = c("Metric", "Value"),
+
+      format = "markdown",
+
+      caption = full_caption,
+
+    )
+
+  }
+
+ 
+
+```
+
+
+# Steven's function call
+```{r run_func}
+
+print_model_metrics(model = full.model, test_data = testing_set_out, response_var = "income", pos_value = ">50K", threshold = 0.26, model_title = "Simple GLM")
+```
+
+
+# Steven's plot function
+# Generic Function to plot metrix by threshold
+```{r run_func2}
+
+set.seed(1234)
+library(caret)
+
+library(pROC)
+
+library(ggplot2)
+
+ 
+
+# Example
+
+# plot_model_metrics_by_threshold(model = {your_model}, test_data = {your_test_set}, response_var = "income", pos_value = {"Greater.50K"})
+
+ 
+
+plot_model_metrics_by_threshold <-
+
+  function(model,
+
+           test_data,
+
+           response_var,
+
+           pos_value,
+
+           thresholds = seq(0.1, 0.9, by = 0.05),
+
+           model_title = "Model Metrics by Threshold") {
+
+    # Ensure the response variable is a factor with exactly two levels
+
+    response_factor <-
+
+      factor(test_data[[response_var]], levels = unique(test_data[[response_var]]))
+
+   
+
+    # Make sure we have exactly two levels
+
+    if (length(levels(response_factor)) != 2) {
+
+      stop("Response variable must have exactly two levels.")
+
+    }
+
+   
+
+    # Prepare to collect metrics
+
+    results <-
+
+      data.frame(
+
+        Threshold = numeric(0),
+
+        Accuracy = numeric(0),
+
+        Sensitivity = numeric(0),
+
+        Specificity = numeric(0),
+
+        Prevalence = numeric(0),
+
+        PPV = numeric(0),
+
+        NPV = numeric(0)
+
+      )
+
+   
+
+    # Loop over each threshold
+
+    for (threshold in thresholds) {
+
+      # Make predictions and convert to factor with the specified positive value
+
+      probabilities <- predict(model, test_data, type = "response")
+
+      predicted_classes <-
+
+        factor(
+
+          ifelse(
+
+            probabilities > threshold,
+
+            pos_value,
+
+            levels(response_factor)[levels(response_factor) != pos_value]
+
+          ),
+
+          levels = levels(response_factor)
+
+        )
+
+     
+
+      # Calculate the confusion matrix using caret
+
+      cm <-
+
+        confusionMatrix(predicted_classes, response_factor, positive = pos_value)
+
+     
+
+      # Store metrics
+
+      results <- rbind(
+
+        results,
+
+        data.frame(
+
+          Threshold = threshold,
+
+          Accuracy = cm$overall['Accuracy'],
+
+          Sensitivity = cm$byClass['Sensitivity'],
+
+          Specificity = cm$byClass['Specificity'],
+
+          Prevalence <- cm$byClass['Prevalence'],
+
+          PPV = cm$byClass['Pos Pred Value'],
+
+          NPV = cm$byClass['Neg Pred Value']
+
+        )
+
+      )
+
+    }
+
+   
+
+    # Melt results for plotting
+
+    results_long <-
+
+      reshape2::melt(results, id.vars = 'Threshold', variable.name = 'Metric')
+
+   
+
+    # Plot results
+
+    plot <-
+
+      ggplot(results_long, aes(x = Threshold, y = value, color = Metric)) +
+
+      geom_line() +
+
+      labs(title = model_title, x = "Threshold", y = "Metric Value") +
+
+      scale_color_manual(
+
+        values = c(
+
+          "Accuracy" = "blue",
+
+          "Sensitivity" = "red",
+
+          "Specificity" = "green",
+
+          "Prevalence" = "purple",
+
+          "PPV" = "orange",
+
+          "NPV" = "brown"
+
+        )
+
+      ) +
+
+      scale_y_continuous(limits = c(0, 1)) +
+
+      ggtitle(paste("Metrics for Various Thresholds -", model_title))
+
+   
+
+    # Return the plot
+
+    return(plot)
+
+  }
+
+```
+
+
+```{r plot_func}
+plot_model_metrics_by_threshold(model =full.model, test_data = testing_set_out, response_var = "income", pos_value = ">50K")
+
+```
+
+## Complex Models with Interactions and Polynomials
+### Complex: Poly Squared
+$$
+\hat{Y}_{\text{income}} = \beta_0 \\
++ \beta_{1} \text{marital_status} \\
++ \beta_{2} \text{household_role} \\
++ \beta_{3} \text{occupation}\\
++ \beta_4 \text{years_education} \\
++ \beta_5 \text{age} + \beta_6  \text{age}^2 \\
++ \beta_7 \text{hours_per_week} + \beta_8  \text{hours_per_week}^2 \\
++ \beta_9 \text{capital_gain_log} + \beta_{10}  \text{capital_gain_log}^2 \\
++ \beta_{11}  \text{capital_loss_log} + \beta_{12}  \text{capital_loss_log}^2 \\
+$$
+
+
+```{r}
+model_formula <- as.formula("income ~ poly(age,2)  +
+                                      poly(years_education,2) +
+                                      poly(hours_per_week,2) +
+                                      poly(capital_gain_log,2) +
+                                      poly(capital_loss_log,2) +
+                                      marital_status_num +
+                                      household_role_num +
+                                      occupation_num")
+
+
+poly.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(poly.fit)
+
+par(mfrow=c(2,2))
+plot(poly.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(model = poly.fit, test_data = testing_set_LR,
+                                response_var = "income",
+                                pos_value = "1",
+                                model_title = "Simple Fit with Polynomial ^2")
+
+poly2 <- print_model_metrics(model = poly.fit, 
+                             test_data = testing_set_LR, 
+                             response_var = "income", 
+                             pos_value = "1", 
+                             threshold = 0.267, 
+                             model_title = "Simple Fit with Polynomial ^2")
+print(poly2)
+```
+
+
+### Complex: Poly Cubed
+$$
+\hat{Y}_{\text{income}} = \beta_0 \\
++ \beta_{1} \text{marital_status} \\
++ \beta_{2} \text{household_role} \\
++ \beta_{3} \text{occupation}\\
++ \beta_4 \text{years_education} \\
++ \beta_5 \text{age} + \beta_6  \text{age}^3 \\
++ \beta_7 \text{hours_per_week} + \beta_8  \text{hours_per_week}^3 \\
++ \beta_9 \text{capital_gain_log} + \beta_{10}  \text{capital_gain_log}^3 \\
++ \beta_{11}  \text{capital_loss_log} + \beta_{12}  \text{capital_loss_log} \\
+$$
+
+
+```{r}
+model_formula3 <- as.formula("income ~ poly(age,3)  +
+                                      poly(years_education,3) +
+                                      poly(hours_per_week,3) +
+                                      poly(capital_gain_log,3) +
+                                      capital_loss_log +
+                                      marital_status_num +
+                                      household_role_num +
+                                      occupation_num")
+
+
+poly3.fit <- glm(model_formula3, data = training_set_LR, family = "binomial")
+summary(poly3.fit)
+par(mfrow=c(2,2))
+plot(poly3.fit)
+par(mfrow=c(1,1))
+
+
+plot_model_metrics_by_threshold(
+  model = poly3.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Simple Fit with Polynomial ^3"
+)
+
+poly3 <-
+  print_model_metrics(
+    model = poly3.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Simple Fit with Polynomial Cubed"
+  )
+print(poly3)
+```
+
+
+### Interactions between Age*Gender and Hours_per_Week * Race
+$$
+\hat{Y}_{\text{income}} = \beta_0 \\
++ \beta_1 \text{age} + \beta_2 \text{gender} +  \beta_3 \text{hours_per_week}\\
++ \beta_4 \text{years_education}+ \beta_5 \text{marital_status} \\
++ \beta_6 \text{capital_gain_log} + \beta_{7} \text{capital_loss_log}\\
++ \beta_{8} \text{household_role} + \beta_{9} \text{occupation} \\
++ \beta_{10} (\text{age} \times \text{gender})
++ \beta_{11} (\text{years_education} \\
++ \beta_{12} (\text{hours_per_week} \times \text{race}) \\
+$$
+
+
+```{r, warning=FALSE}
+
+model_formula <- as.formula("income ~ age * gender_num  +
+                                      hours_per_week * race_num +
+                                      years_education +
+                                      capital_gain_log +
+                                      capital_loss_log +
+                                      household_role_num +
+                                      marital_status_num +
+                                      occupation_num")
+
+complex.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(complex.fit)
+formula(complex.fit)
+
+
+par(mfrow=c(2,2))
+plot(complex.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(
+  model = complex.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Complex (Interactions)"
+)
+
+compleX <-
+  print_model_metrics(
+    model = complex.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Interactions:(Hours_per_week* Race)"
+  )
+print(complex)
+
+```
+
+
+
+### Complex: Poly numericals with interactions age*gender, marital_status(hour and years education)
+```{r}
+
+model_formula <- as.formula("income ~ poly(age,2)*gender_num +
+                                      poly(years_education,2) * marital_status_num +
+                                      poly(hours_per_week,2) * marital_status_num +
+                                      poly(capital_gain_log,2) +
+                                      poly(capital_loss_log,2) +
+                                      household_role_num +
+                                      occupation_num")
+
+complex.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(complex.fit)
+par(mfrow=c(2,2))
+plot(complex.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(
+  model = complex.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Complex (Interactions with poly)"
+)
+
+poly.mixed <-
+  print_model_metrics(
+    model = complex.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Complex (poly w/interactions)"
+  )
+print(poly.mixed)
+```
+
+
+
+### Complex Model interaction Native Region
+```{r}
+# Using Native Country as interaction except for capital_gain_log and capital_loss_log which is using invested
+model_formula <- as.formula("income ~ age * native_region_num + 
+                                      years_education * native_region_num + 
+                                      hours_per_week * native_region_num +
+                                      capital_gain_log * native_region_num +
+                                      capital_loss_log * native_region_num +
+                                      marital_status_num + 
+                                      household_role_num + 
+                                      occupation_num")
+
+
+complex.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(complex.fit)
+par(mfrow=c(2,2))
+plot(complex.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(
+  model = complex.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Complex (Interaction Native Region)"
+)
+
+complex <-
+  print_model_metrics(
+    model = complex.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Complex (Interaction Occupation)"
+  )
+print(complex)
+```
+
+
+
+### Complex Model interaction Native Region with Poly
+```{r}
+# Using Native Country as interaction except for capital_gain_log and capital_loss_log which is using invested
+model_formula <- as.formula("income ~ age * native_region_num + 
+                                      years_education * native_region_num + 
+                                      marital_status_num + 
+                                      household_role_num + 
+                                      hours_per_week +
+                                      occupation_num +
+                                      poly(capital_gain_log,2) * native_region_num +
+                                      poly(capital_loss_log,2) * native_region_num")
+
+
+complex.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(complex.fit)
+par(mfrow=c(2,2))
+plot(complex.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(
+  model = complex.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Complex (Interaction Native Region with poly^2)"
+)
+
+complex <-
+  print_model_metrics(
+    model = complex.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Complex (Interaction Native Region with poly^2)"
+  )
+print(complex)
+```
+
+
+
+### Complex Model interaction Race
+```{r}
+# Using Race as interaction except for capital_gain_log and capital_loss_log which is using invested
+model_formula <- as.formula("income ~ age * race_num + 
+                                      years_education * race_num + 
+                                      marital_status_num * race_num + 
+                                      household_role_num * race_num + 
+                                      hours_per_week +
+                                      poly(capital_gain_log, 2)+
+                                      poly(capital_loss_log, 2)")
+
+
+complex.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(complex.fit)
+par(mfrow=c(2,2))
+plot(complex.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(
+  model = complex.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Complex (Interaction Race)"
+)
+
+complex <-
+  print_model_metrics(
+    model = complex.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Complex (Interaction Race)"
+  )
+print(complex)
+```
+
+
+
+### Complex Model interaction Occupation
+$$
+\hat{Y}_{\text{income}} = \beta_0 + (\beta_1 \times \text{age} \times \text{occupation}) + (\beta_2 \times \text{years_education} \times \text{occupation}) + (\beta_3 \times \text{marital_status} \times \text{occupation}) + (\beta_4 \times \text{household_role} \times \text{occupation}) + (\beta_5 \times \text{hours_per_week} \times \text{occupation}) \\
++ (\beta_6 \times \text{capital_gain_log} \times \text{occupation}) + (\beta_7 \times \text{capital_loss_log} \times \text{occupation})
+$$
+
+```{r, warning=FALSE}
+# Using Race as interaction except for capital_gain_log and capital_loss_log which is using invested
+model_formula <- as.formula("income ~ (age * occupation_num +
+                                      years_education +
+                                      hours_per_week * occupation_num +
+                                      poly(capital_gain_log, 2)+
+                                      poly(capital_loss_log, 2))")
+
+
+complex.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(complex.fit)
+par(mfrow=c(2,2))
+plot(complex.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(
+  model = complex.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Complex (Interaction Occupation)"
+)
+
+complex <-
+  print_model_metrics(
+    model = complex.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Complex (Interaction Occupation)"
+  )
+print(complex)
+```
+
+
+
+
+### Complex Model interaction Household Role 
+```{r, warning=FALSE}
+model_formula <- as.formula("income ~ (age +
+                                      years_education +
+                                      marital_status_num +
+                                      hours_per_week +
+                                      capital_gain_log +
+                                      capital_loss_log) * household_role_num")
+
+
+complex.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(complex.fit)
+par(mfrow=c(2,2))
+plot(complex.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(
+  model = complex.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Complex (Interaction Household Role)"
+)
+
+complex <-
+  print_model_metrics(
+    model = complex.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Complex (Interaction Household Role)"
+  )
+
+print(complex)
+```
+
+
+
+
+### Complex Model interaction Household Role with poly
+```{r, warning=FALSE}
+
+model_formula <- as.formula("income ~ (age +
+                                    years_education +
+                                    hours_per_week +
+                                    poly(capital_gain_log, 2)+
+                                    poly(capital_loss_log, 2)) * household_role_num")
+
+
+complex.fit <- glm(model_formula, data = training_set_LR, family = "binomial")
+summary(complex.fit)
+par(mfrow=c(2,2))
+plot(complex.fit)
+par(mfrow=c(1,1))
+
+plot_model_metrics_by_threshold(
+  model = complex.fit,
+  test_data = testing_set_LR,
+  response_var = "income",
+  pos_value = "1",
+  model_title = "Complex (Interaction Household Role and polynomial)"
+)
+
+complex6 <-
+  print_model_metrics(
+    model = complex.fit,
+    test_data = testing_set_LR,
+    response_var = "income",
+    pos_value = "1",
+    threshold = 0.267,
+    model_title = "Complex (Interaction Household Role and polynomial)"
+  )
+
+print(complex6)
+```
+
+
+
+# Objective two Models part 2
+# Test with interactions added on suspected variables with higher multicollinearity using the One-Hot_encoded data. Some interaction showed significance, but the model performed equal to model 3 above.
+```{r obj2_interactions}
+################## glm test with influential outliers removed ##############################
+cat("\n\n----------------interactions--------------\n\n")
+
+interactions_formula <- as.formula(income ~ +age + workclass_num + education_level_num + years_education + marital_status_num+ 
+                              occupation_num + household_role_num + race_num + gender_num + capital_gain_log + capital_loss_log +  hours_per_week +
+                                native_region_num + capital_gain_log:capital_loss_log + 
+                               education_level_num:years_education +workclass_num:occupation_num)
+interactions_formula
+
+interactions_formula2 <- as.formula(income ~ +age + workclass_num + similar_pop_count + education_level_num + years_education + marital_status_num+ 
+                              occupation_num + household_role_num + race_num + gender_num + capital_gain + capital_loss +  hours_per_week +
+                                native_region_num + invested_num + capital_gain:capital_loss + 
+                               education_level_num:years_education +workclass_num:occupation_num)
+
+# Fit a logistic regression model
+model6 <- glm(interactions_formula, data = training_set_LR, family = binomial)
+
+# Confidence interval
+# confint(model3)
+
+# Summarize the final selected model
+summary(model6)
+
+# Check for multicollinearity
+# vif(model6) 
+
+# Perform Hosmer-Lemeshow goodness of fit test
+# Note: A p-value less than 0.05 typically suggests that the model does not fit the data well.
+hoslem.test(training_set_LR$income, fitted(model6))
+
+# Make predictions
+probabilities <- model6 %>% predict(testing_set_LR, type = "response")
+predicted.classes <- ifelse(probabilities > 0.28, "1", "0")
+
+# Model accuracy
+accuracy <- mean(predicted.classes==testing_set_LR$income)
+
+# confusion matrix 
+tb <- table(predicted.classes, testing_set_LR$income)
+tb
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb[2, 2] / (tb[2, 2] + tb[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb[1, 1] / (tb[1, 1] + tb[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb[1, 2] + tb[2, 2]) / sum(tb)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb[2, 2] / (tb[2, 2] + tb[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb[1, 1] / (tb[1, 1] + tb[1, 2])
+
+# Calculate AUROC
+roc_obj <- roc(testing_set_LR$income, probabilities)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+```
+
+
+# lda full
+```{r lda}
+library(caret)
+# change the income value names to work with glmnet (greater than sign will not run)
+training_set2 <- training_set
+training_set2$income <- gsub('<=50K', 'less_than_50K', training_set2$income)
+training_set2$income <- gsub('>50K', 'greater_than_50K', training_set2$income)
+
+testing_set2 <- testing_set
+testing_set2$income <- gsub('<=50K', 'less_than_50K', testing_set2$income)
+testing_set2$income <- gsub('>50K', 'greater_than_50K', testing_set2$income)
+
+levels(training_set2$income)
+
+fitControl<-trainControl(method="repeatedcv",number=2,repeats=1,classProbs=TRUE, summaryFunction=mnLogLoss)
+set.seed(1234)
+
+# Convert 'income' to a factor
+training_set2$income <- factor(training_set2$income, levels = c('greater_than_50K', 'less_than_50K'))
+testing_set2$income <- factor(testing_set2$income, levels = c('greater_than_50K', 'less_than_50K'))
+
+
+
+# Fit a logistic regression model
+logreg_model <- train(income ~ ., data = training_set2,
+                      method = "lda",
+                      trControl = fitControl,
+                      metric = "logLoss")
+
+# Compute predicted probabilities on the training data
+logreg_predictions <- predict(logreg_model, testing_set2, type = "prob")[, 'less_than_50K']
+
+
+threshold <- 0.78
+# Create factor predictions based on a threshold
+logreg_preds <- factor(ifelse(logreg_predictions > threshold, 'less_than_50K', 'greater_than_50K' ),
+                       levels = c( 'less_than_50K', 'greater_than_50K' ))
+
+# Get the confusion matrix
+confusionMatrix(data = logreg_preds, reference = testing_set2$income)
+
+library(ROCR)
+
+roc_obj <- roc(testing_set2$income, logreg_predictions)
+auroc <- auc(roc_obj)
+
+cat("AUROC:", auroc, "\n")
+
+
+
+
+```
+
+
+# Non-Parametric Model testing.
+
+# feedforward neural network (NN) with one hidden layer
+* Sources: https://rpubs.com/H_Zhu/235617
+* https://rpubs.com/mbaumer/NeuralNetworks
+```{r nn1}
+set.seed(1234)
+library(nnet)
+library(NeuralNetTools)
+
+# run the model
+nn1 <- nnet(income ~ ., data = training_set_out, size = 20, maxit = 500)
+# summary(nn1)
+
+# predict against the test set
+nn1.pred <- predict(nn1, newdata = testing_set_out, type = 'raw')
+
+pred1 <- rep('<=50K', length(nn1.pred))
+pred1[nn1.pred>=.28] <- '>50K' # Threshold set here
+
+# Create a neural network graph
+plotnet(nn1, y_names = "IncomeLevel")
+title("Graphical Representation of our Neural Network")
+
+# Feature selection
+garson(nn1)
+garson(nn1, bar_plot = FALSE)
+
+# confusion matrix 
+tb1 <- table(pred1, testing_set_out$income)
+tb1
+
+# Model accuracy - overall correctness
+accuracy <- mean(pred1==testing_set_out$income)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb1[2, 2] / (tb1[2, 2] + tb1[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb1[1, 1] / (tb1[1, 1] + tb1[2, 1])
+
+# Calculate Prevalence - percentage of the positive term in the dataset
+prevalence <- (tb1[1, 2] + tb1[2, 2]) / sum(tb1)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb1[2, 2] / (tb1[2, 2] + tb1[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb1[1, 1] / (tb1[1, 1] + tb1[1, 2])
+
+# Calculate AUROC
+roc_obj <- roc(testing_set_out$income, nn1.pred)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+```
+
+Classification and Regression Trees (CART) model is obtained by recursively partitioning the data space and fitting a simple prediction model within each partition. 
+* It evaluates all possible splits and selects the one that best reduces impurity (e.g., Gini impurity for classification or residual reduction for regression).
+* To prevent overfitting, pruning techniques are applied to remove nodes that contribute little to model accuracy.
+
+```{r}
+library(rpart)
+library(rpart.plot)
+
+new_formula2 <- as.formula(income ~ +age + years_education + capital_gain_log + capital_loss_log +
+                             marital_status+ occupation + household_role + gender + hours_per_week)
+
+set.seed(1234)
+# Build the decision tree model # cp is the complexity tradeoff - smaller is better
+tree2 <- rpart(new_formula2, data = training_set_out, method = 'class', cp = 1e-20) 
+
+# Plot the decision tree 
+rpart.plot(tree2, fallen.leaves = FALSE, tweak = 1.1, varlen = 4, faclen = 4)
+rpart.plot(tree2)
+
+# Predict class probabilities
+tree2.pred.prob <- predict(tree2, newdata = testing_set_out, type = 'prob')
+
+# Apply threshold to get predicted classes
+threshold <- 0.22
+tree2.pred <- ifelse(tree2.pred.prob[, ">50K"] > threshold, ">50K", "<=50K")
+
+# Confusion matrix
+tb2 <- table(tree2.pred, testing_set_out$income)
+tb2
+# Model accuracy
+accuracy <- mean(tree2.pred == testing_set_out$income)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb2[2, 2] / (tb2[2, 2] + tb2[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb2[1, 1] / (tb2[1, 1] + tb2[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb2[1, 2] + tb2[2, 2]) / sum(tb2)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb2[2, 2] / (tb2[2, 2] + tb2[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb2[1, 1] / (tb2[1, 1] + tb2[1, 2])
+
+# Assuming the positive class is '>50K'
+positive_class_probs <- tree2.pred.prob[, ">50K"]
+
+# Calculate AUROC using the vector of probabilities for the positive class
+roc_obj <- roc(testing_set_out$income, positive_class_probs)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("Accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+
+```
+
+
+# Classification and Regression Trees (CART)
+# Source: https://carpentries-incubator.github.io/r-ml-tabular-data/04-Decision-Forests/index.html
+```{r decision_tree}
+set.seed(1234)
+library(rpart)
+# install.packages("rpart.plot")
+library(rpart.plot)
+
+# create a decision tree model
+rwtree <- rpart(new_formula2, data = training_set_out, method = "class", cp = 1e-10) # CP Complexity- lower is more complex
+rpart.plot(rwtree)
+# summary(rwtree)
+
+# Predict class probabilities
+rwtree.pred.prob <- predict(rwtree, newdata = testing_set_out, type = 'prob')
+
+# Apply threshold to get predicted classes
+threshold <- 0.22
+rwtree.pred <- ifelse(rwtree.pred.prob[, ">50K"] > threshold, ">50K", "<=50K")
+
+# Confusion matrix
+tb5 <- table(rwtree.pred, testing_set_out$income)
+tb5
+
+rwtreeErrors <- rwtree.pred.prob - ifelse(testing_set_out$income == ">50K", 1, 0)
+rwtreeRMSE <- sqrt(mean(rwtreeErrors^2))
+
+
+
+# Model accuracy
+accuracy <- mean(rwtree.pred == testing_set_out$income)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb5[2, 2] / (tb5[2, 2] + tb5[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb5[1, 1] / (tb5[1, 1] + tb5[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb5[1, 2] + tb5[2, 2]) / sum(tb5)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb5[2, 2] / (tb5[2, 2] + tb5[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb5[1, 1] / (tb5[1, 1] + tb5[1, 2])
+
+# Assuming the positive class is '>50K'
+positive_class_probs <- rwtree.pred.prob[, ">50K"]
+
+# Calculate AUROC using the vector of probabilities for the positive class
+roc_obj <- roc(testing_set_out$income, positive_class_probs)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("Accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+cat("RMSE:", rwtreeRMSE, "\n")
+```
+
+
+# Random forest (RF) improves predictive accuracy by generating a large number of bootstrapped trees.
+# Sources: https://carpentries-incubator.github.io/r-ml-tabular-data/04-Decision-Forests/index.html
+* MeanDecreaseAccuracy measures how much the model’s accuracy decreases when a specific feature is excluded. Higher values indicate that excluding that feature would significantly impact prediction accuracy.
+* MeanDecreaseGini assesses how each feature contributes to the homogeneity of nodes and leaves in the random forest.A higher value suggests that excluding that feature would lead to less pure (more impure) nodes.
+* Compare the importance rankings between the two metrics. If a feature is consistently high in both panels, it is likely crucial.
+* Plot - Out-of-Bag (OOB) Error Line (Green, Dotted), Test Error Line (Red, Dashed): both models plateau quickly and are no longer viable after 200 trees.
+```{r}
+set.seed(1234)
+library(randomForest)
+
+# Train the random forest model
+rf3t <- randomForest(income ~ ., data = training_set_out, ntree = 300, keep.forest=TRUE, importance=TRUE,test=testing_set_out$income)
+rf3t
+plot(rf3t)
+
+# Visually check variable importance.
+importance(rf3t)
+varImpPlot(rf3t)
+
+
+# Predict class probabilities
+rf3t.pred.prob <- predict(rf3t, newdata = testing_set_out, type = 'prob')
+
+# Apply threshold to get predicted classes
+threshold <- 0.2
+rf3t.pred <- ifelse(rf3t.pred.prob[, ">50K"] > threshold, ">50K", "<=50K")
+
+# Confusion matrix
+tb3t <- table(rf3t.pred, testing_set_out$income)
+tb3t
+
+# Get the RMSE -not sure how useful this is because it is categorical
+rfErrors <- rf3t.pred.prob - ifelse(testing_set_out$income == ">50K", 1, 0)
+rfRMSE <- sqrt(mean(rfErrors^2))
+rfRMSE
+
+# Model accuracy
+accuracy <- mean(rf3t.pred == testing_set_out$income)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb3t[2, 2] / (tb3t[2, 2] + tb3t[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb3t[1, 1] / (tb3t[1, 1] + tb3t[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb3t[1, 2] + tb3t[2, 2]) / sum(tb3t)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb3t[2, 2] / (tb3t[2, 2] + tb3t[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb3t[1, 1] / (tb3t[1, 1] + tb3t[1, 2])
+
+# Assuming the positive class is '>50K'
+positive_class_probs <- rf3t.pred.prob[, ">50K"]
+
+# Calculate AUROC using the vector of probabilities for the positive class
+roc_obj <- roc(testing_set_out$income, positive_class_probs)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("Accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+cat("RMSE:", rfRMSE, "\n")
+
+```
+
+# Random Forest reduced model
+```{r RF_reduced}
+set.seed(1234)
+cat("\n---------------reduced model-------------\n")
+
+new_formula2 <- as.formula(income ~ +age + years_education + capital_gain_log + capital_loss_log +
+                             marital_status+ occupation + household_role + hours_per_week)
+
+# Train the reduced random forest model
+rf3 <- randomForest(new_formula2, data = training_set_out, ntree = 300)
+rf3
+plot(rf3)
+
+# Visually check variable importance.
+importance(rf3)
+varImpPlot(rf3)
+
+
+# Predict class probabilities
+rf3.pred.prob <- predict(rf3, newdata = testing_set_out, type = 'prob')
+
+# Apply threshold to get predicted classes
+threshold <- 0.13
+rf3.pred <- ifelse(rf3.pred.prob[, ">50K"] > threshold, ">50K", "<=50K")
+
+# Confusion matrix
+tb3 <- table(rf3.pred, testing_set_out$income)
+tb3
+
+# Get the RMSE -not sure how useful this is because it is categorical
+rfErrors <- rf3.pred.prob - ifelse(testing_set_out$income == ">50K", 1, 0)
+rfRMSE <- sqrt(mean(rfErrors^2))
+
+# Model accuracy
+accuracy <- mean(rf3.pred == testing_set_out$income)
+
+# Calculate Sensitivity (True Positive Rate)
+sensitivity <- tb3[2, 2] / (tb3[2, 2] + tb3[1, 2])
+
+# Calculate Specificity (True Negative Rate)
+specificity <- tb3[1, 1] / (tb3[1, 1] + tb3[2, 1])
+
+# Calculate Prevalence
+prevalence <- (tb3[1, 2] + tb3[2, 2]) / sum(tb3)
+
+# Calculate PPV (Positive Predictive Value)
+ppv <- tb3[2, 2] / (tb3[2, 2] + tb3[2, 1])
+
+# Calculate NPV (Negative Predictive Value)
+npv <- tb3[1, 1] / (tb3[1, 1] + tb3[1, 2])
+
+# Assuming the positive class is '>50K'
+positive_class_probs <- rf3.pred.prob[, ">50K"]
+
+# Calculate AUROC using the vector of probabilities for the positive class
+roc_obj <- roc(testing_set_out$income, positive_class_probs)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("Accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+cat("RMSE:", rfRMSE, "\n")
+
+```
+
+
+# Support vector machine (SVM) to predict the income level
+```{r}
+library(kernlab)
+library(caret)
+
+set.seed(1234)
+# Train the SVM model
+svm4 <- ksvm(income ~ ., data = training_set_out, )
+
+# Get decision values
+svm4.pred.prob <- predict(svm4, newdata = testing_set_out, type = 'decision')
+
+# Apply threshold to decision values to get predicted classes
+threshold <- -.9 # Adjust this threshold (not normal for SVM)
+svm4.pred <- ifelse(svm4.pred.prob > threshold, ">50K", "<=50K")
+
+
+# Confusion matrix
+tb4 <- table(svm4.pred, testing_set_out$income)
+tb4
+# Calculate accuracy and other metrics
+accuracy <- mean(svm4.pred == testing_set_out$income)
+sensitivity <- tb4[2, 2] / (tb4[2, 2] + tb4[1, 2])
+specificity <- tb4[1, 1] / (tb4[1, 1] + tb4[2, 1])
+prevalence <- (tb4[1, 2] + tb4[2, 2]) / sum(tb4)
+ppv <- tb4[2, 2] / (tb4[2, 2] + tb4[2, 1])
+npv <- tb4[1, 1] / (tb4[1, 1] + tb4[1, 2])
+
+# Calculate AUROC using the decision values
+roc_obj <- roc(testing_set_out$income, svm4.pred.prob)
+auroc <- auc(roc_obj)
+
+# Print the metrics
+cat("Accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Prevalence:", prevalence, "\n")
+cat("PPV:", ppv, "\n")
+cat("NPV:", npv, "\n")
+cat("AUROC:", auroc, "\n")
+
+```
+
+
+
+
+* Accuracy: This tells you the overall correctness of the model, but it doesn’t account for the class imbalance or the costs of different types of errors.
+* Sensitivity (True Positive Rate): Indicates how well the model predicts the positive class, in this case, those earning over 50K. It’s important if you don’t want to miss individuals who are actually earning more than 50K.
+*Specificity (True Negative Rate): Shows how well the model predicts the negative class, those earning under 50K. It’s important if you want to minimize false alarms, where people are incorrectly predicted to earn more than 50K.
+* Prevalence: This is the actual proportion of the positive class in your dataset. It doesn’t help with prediction but gives context about the dataset.
+* PPV (Positive Predictive Value): Tells you how likely it is that a person predicted to earn over 50K actually does. This is useful if the cost of falsely identifying someone as earning over 50K is high.
+* NPV (Negative Predictive Value): Indicates the likelihood that a person predicted to earn under 50K actually earns less than that. It’s useful when it’s important not to misclassify those who earn under 50K.
+* AUROC (Area Under the Receiver Operating Characteristic curve): This metric is useful for evaluating the model’s ability to discriminate between the two classes across all thresholds. A high AUROC indicates a model that is good at ranking predictions rather than making a hard cutoff.
+
+# ROC Curve
+Sources: https://www.statology.org/interpret-roc-curve/
+
+```{r}
+prob <- predict(model4, testing_set, type = 'response') # reduced
+# create a prediction object
+pr <- prediction(prob, testing_set$income)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+
+# create a data frame for TP and FP rates
+dd <- data.frame(FP = prf@x.values[[1]], TP = prf@y.values[[1]])
+
+# complex LR
+prob5 <- predict(model6, testing_set_LR, type = 'response') #interactions
+# create a prediction object
+pr5 <- prediction(prob5, testing_set_LR$income)
+prf5 <- performance(pr5, measure = "tpr", x.measure = "fpr")
+
+# create a data frame for TP and FP rates
+dd5 <- data.frame(FP = prf5@x.values[[1]], TP = prf5@y.values[[1]])
+
+# NN
+pr1 <- prediction(nn1.pred, testing_set_out$income)
+prf1 <- performance(pr1, measure = "tpr", x.measure = "fpr")
+dd1 <- data.frame(FP = prf1@x.values[[1]], TP = prf1@y.values[[1]])
+
+# CART
+pr2 <- prediction(tree2.pred.prob[,2], testing_set_out$income)
+prf2 <- performance(pr2, measure = "tpr", x.measure = "fpr")
+dd2 <- data.frame(FP = prf2@x.values[[1]], TP = prf2@y.values[[1]])
+
+# RF
+pr3 <- prediction(rf3.pred.prob[,2], testing_set_out$income)
+prf3 <- performance(pr3, measure = "tpr", x.measure = "fpr")
+dd3 <- data.frame(FP = prf3@x.values[[1]], TP = prf3@y.values[[1]])
+
+# SVM
+pr4 <- prediction(svm4.pred.prob, testing_set_out$income)
+prf4 <- performance(pr4, measure = "tpr", x.measure = "fpr")
+dd4 <- data.frame(FP = prf4@x.values[[1]], TP = prf4@y.values[[1]])
+
+# Create a prediction object for the lda model (logreg_predictions)
+pr6 <- prediction(logreg_predictions, testing_set2$income)
+
+# Calculate the True Positive Rate (TPR) and False Positive Rate (FPR)
+prf6 <- performance(pr6, measure = "tpr", x.measure = "fpr")
+dd6 <- data.frame(FP = prf6@x.values[[1]], TP = prf6@y.values[[1]])
+
+
+
+# plot ROC curve for logistic regression
+g <- ggplot() + 
+  geom_line(data = dd, aes(x = FP, y = TP, color = 'Logistic Regression')) + 
+  geom_line(data = dd5, aes(x = FP, y = TP, color = 'Complex Logistic Regression')) + 
+  geom_line(data = dd1, aes(x = FP, y = TP, color = 'Neural Networks')) + 
+  geom_line(data = dd2, aes(x = FP, y = TP, color = 'CART')) + 
+  geom_line(data = dd3, aes(x = FP, y = TP, color = 'Random Forest')) +
+  geom_line(data = dd4, aes(x = FP, y = TP, color = 'Support Vector Machine')) +
+  geom_line(data = dd6, aes(x = FP, y = TP, color = 'Linear Discriminant Analysis')) +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1)) +
+  ggtitle('ROC Curve') + 
+  labs(x = 'False Positive Rate', y = 'True Positive Rate') 
+
+
+g +  scale_colour_manual(name = 'Classifier', values = c('Logistic Regression'='#E69F00', 
+                                                         'Complex Logistic Regression'='red',
+                                               'Neural Networks'='blue', 'CART'='#009E73', 
+                                               'Random Forest'='#D55E00', 'Support Vector Machine'='#0072B2',
+                                               'Linear Discriminant Analysis' = 'green'))
+```
+
+
+```{r}
+# AUC
+auc <- rbind(performance(pr, measure = 'auc')@y.values[[1]],
+             performance(pr1, measure = 'auc')@y.values[[1]],
+             performance(pr2, measure = 'auc')@y.values[[1]],
+             performance(pr3, measure = 'auc')@y.values[[1]],
+             performance(pr4, measure = 'auc')@y.values[[1]],
+             performance(pr5, measure = 'auc')@y.values[[1]],
+             performance(pr6, measure = 'auc')@y.values[[1]])
+rownames(auc) <- (c('Logistic Regression', 'Neural Networks', 'CART',
+                                    'Random Forest', 'Support Vector Machine', 
+                    'Complex Logistic Regression', 'Linear Discriminant Analysis'))
+colnames(auc) <- 'Area Under ROC Curve'
+round(auc, 4)
+```
+
+# Appendix
+
+
+
+
+
+
+
+
